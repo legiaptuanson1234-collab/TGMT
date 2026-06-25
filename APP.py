@@ -42,13 +42,18 @@ if uploaded_file is not None:
         # Lưu đường dẫn vào bộ nhớ RAM
         st.session_state.video_path = tfile.name
         
-        # 2. TRÍCH XUẤT FRAME ĐẦU TIÊN
+        # 2. TRÍCH XUẤT LẤY FRAME CHÍNH GIỮA VIDEO (NÉ MỌI HIỆU ỨNG ĐẦU VIDEO)
         cap = cv2.VideoCapture(st.session_state.video_path)
         
-        # TUA QUA 30 FRAME ĐẦU (1 GIÂY) ĐỂ TRÁNH DÍNH ẢNH TRẮNG/ĐEN
-        cap.set(cv2.CAP_PROP_POS_FRAMES, 30) 
+        # Đếm tổng số khung hình
+        total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
         
+        # Nhảy thẳng đến khung hình ở GIỮA video
+        if total_frames > 0:
+            cap.set(cv2.CAP_PROP_POS_FRAMES, total_frames // 2) 
+            
         ret, frame = cap.read()
+        cap.release()
         
         # Quét dự phòng nếu frame bị rỗng
         if not ret:
