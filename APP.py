@@ -3,8 +3,8 @@ import cv2
 import numpy as np
 from PIL import Image
 from streamlit_drawable_canvas import st_canvas
-import tempfile
 import os
+import uuid
 
 # --- NHẬP CÁC MODULE AI CỦA BẠN ---
 from tracking import run_ai_system
@@ -15,73 +15,66 @@ st.set_page_config(page_title="Traffic AI - UTT", layout="wide", page_icon="🚦
 st.title("🚦 HỆ THỐNG ĐẾM XE & CẢNH BÁO GIAO THÔNG AI")
 st.markdown("**Đồ án Kỹ thuật - Sinh viên: Lê Giáp Tuấn Sơn - UTT**")
 
+# --- HÀM TRÍCH XUẤT FRAME ĐẦU TIÊN (CÓ CACHE CHỐNG XUNG ĐỘT VÀ LỖI VỠ FILE) ---
+@st.cache_data
+def get_first_frame(file_bytes):
+    unique_id = uuid.uuid4().hex
+    temp_filename = f"temp_frame_{unique_id}.mp4"
+    
+    # Ghi file tạm duy nhất cho phiên này
+    with open(temp_filename, "wb") as f:
+        f.write(file_bytes)
+        
+    cap = cv2.VideoCapture(temp_filename)
+    ret, frame = cap.read()
+    
+    # CHỐNG LỖI: Nếu frame đầu lỗi, thử đọc thêm vài frame tiếp theo
+    if not ret:
+        for _ in range(5):
+            ret, frame = cap.read()
+            if ret: break
+    cap.release()
+    
+    # Xóa file tạm ngay sau khi lấy được ảnh để tránh rác ổ cứng server
+    try:
+        os.remove(temp_filename)
+    except:
+        pass
+        
+    return frame if ret else None
+
 # --- 2. BẢNG ĐIỀU KHIỂN (MENU TRÁI) ---
 with st.sidebar:
     st.header("⚙️ BẢNG ĐIỀU KHIỂN")
     st.markdown("---")
     
     uploaded_file = st.file_uploader("1. Tải Video Lên", type=['mp4', 'avi', 'mov'])
-    
     mode = st.radio("2. Chế Độ Phân Tích", ["Đếm Vạch (Line)", "Đếm Vùng (ROI)"])
-    
     btn_run = st.button("🚀 KHỞI ĐỘNG AI", type="primary", use_container_width=True)
 
-# --- 3. XỬ LÝ VIDEO BẰNG BỘ NHỚ ĐỆM (CHỐNG LỖI SERVER & LỖI ẢNH TRẮNG) ---
+# --- 3. XỬ LÝ VIDEO & BẢNG VẼ CANVAS ---
 if uploaded_file is not None:
+    # Lấy bytes của file để truyền vào hàm cache
+    file_bytes = uploaded_file.getvalue()
     
-    # Kiểm tra xem có phải video mới tải lên không
-    if "uploaded_filename" not in st.session_state or st.session_state.uploaded_filename != uploaded_file.name:
-        st.session_state.uploaded_filename = uploaded_file.name
-        
-        # 1. TẠO FILE TẠM AN TOÀN TRÊN SERVER
-        tfile = tempfile.NamedTemporaryFile(delete=False, suffix='.mp4')
-        tfile.write(uploaded_file.getvalue()) # Bốc toàn bộ dung lượng file thật
-        tfile.flush()
-        tfile.close() # Bắt buộc đóng để Linux lưu 100% xuống đĩa
-        
-        # Lưu đường dẫn vào bộ nhớ RAM
-        st.session_state.video_path = tfile.name
-        
-        # 2. TRÍCH XUẤT LẤY FRAME CHÍNH GIỮA VIDEO (NÉ MỌI HIỆU ỨNG ĐẦU VIDEO)
-        cap = cv2.VideoCapture(st.session_state.video_path)
-        
-        # Đếm tổng số khung hình
-        total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
-        
-        # Nhảy thẳng đến khung hình ở GIỮA video
-        if total_frames > 0:
-            cap.set(cv2.CAP_PROP_POS_FRAMES, total_frames // 2) 
-            
-        ret, frame = cap.read()
-        cap.release()
-        
-        # Quét dự phòng nếu frame bị rỗng
-        if not ret:
-            for _ in range(10):
-                ret, frame = cap.read()
-                if ret: break
-        cap.release()
-        
-        # 3. LƯU ẢNH VÀO RAM
-        if ret:
-            frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-            st.session_state.first_frame = Image.fromarray(frame_rgb)
-        else:
-            st.session_state.first_frame = None
+    # Gọi hàm bộ nhớ đệm lấy frame đầu tiên - HOÀN TOÀN KHÔNG BỊ GHI ĐÈ KHI VẼ
+    frame = get_first_frame(file_bytes)
 
-    # --- 4. HIỂN THỊ CANVAS ĐỂ VẼ ---
-    if st.session_state.first_frame is not None:
-        image_pil = st.session_state.first_frame
+    if frame is not None:
+        # Streamlit dùng hệ màu RGB, OpenCV dùng BGR nên phải chuyển đổi
+        frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+        image_pil = Image.fromarray(frame_rgb)
 
         st.subheader("Bước 1: Vẽ Vạch/Vùng Cảnh Báo")
         st.markdown(f"**Chế độ hiện tại:** {mode}. Hãy dùng chuột click và vẽ trực tiếp lên ảnh dưới đây.")
         
         drawing_mode = "line" if mode == "Đếm Vạch (Line)" else "polygon"
         
+        # CÔNG CỤ VẼ TRỰC TIẾP TRÊN WEB
         canvas_result = st_canvas(
-            fill_color="rgba(255, 165, 0, 0.3)", 
+            fill_color="rgba(255, 165, 0, 0.3)", # Màu nền vùng ROI (trong suốt)
             stroke_width=3,
-            stroke_color="#00FF00", 
+            stroke_color="#00FF00", # Màu vạch line xanh lá
             background_image=image_pil,
             update_streamlit=True,
             height=image_pil.height,
@@ -90,7 +83,7 @@ if uploaded_file is not None:
             key="canvas",
         )
 
-        # --- 5. KÍCH HOẠT YOLOv8 ---
+        # --- 4. KÍCH HOẠT YOLOv8 ---
         if btn_run:
             st.markdown("---")
             st.subheader("📟 Màn Hình Giám Sát Real-time")
@@ -100,9 +93,10 @@ if uploaded_file is not None:
                 objects = canvas_result.json_data["objects"]
                 st.success("[✔] Đã nhận diện được tọa độ. Đang khởi động AI...")
                 
+                # TẠO MỘT CỬA SỔ ẢO TRÊN WEB ĐỂ NHẬN VIDEO TỪ YOLO
                 stframe = st.empty() 
                 
-                # Trích xuất tọa độ
+                # --- TRÍCH XUẤT TỌA ĐỘ TỪ CANVAS ---
                 points = []
                 if drawing_mode == "line":
                     obj = objects[0]
@@ -116,17 +110,21 @@ if uploaded_file is not None:
                         if len(pt) >= 3:
                             points.append((int(pt[1]), int(pt[2])))
 
-                # Khởi tạo Object đếm
+                # --- GHI VIDEO THẬT RA Ổ CỨNG MỘT LẦN DUY NHẤT TRƯỚC KHI AI CHẠY ---
+                video_path = "video_tam.mp4"
+                with open(video_path, "wb") as f:
+                    f.write(file_bytes)
+
+                # Khởi tạo Object đếm, truyền chế độ và tọa độ vẽ trên Web vào cho nó
                 counter_obj = VehicleCounter(mode=drawing_mode, points=points) 
                 
                 try:
-                    # Gọi thẳng file video đã lưu trong RAM ra chạy AI
-                    run_ai_system("best.pt", st.session_state.video_path, "output.mp4", counter_obj, stframe)
+                    # Truyền stframe vào để tracking.py bơm video ra
+                    run_ai_system("best.pt", video_path, "output.mp4", counter_obj, stframe)
                     st.balloons()
                     st.success("🎉 Luồng phân tích giao thông đã hoàn tất!")
                 except Exception as e:
-                    st.error(f"❌ Có lỗi xảy ra trong quá trình tính toán AI: {e}")
+                    st.error(f"❌ Có lỗi xảy ra trong quá trình tính toán: {e}")
+                
             else:
                 st.error("❌ BẠN CHƯA VẼ VẠCH HAY VÙNG ROI! Vui lòng dùng chuột vẽ lên hình trước khi bấm Khởi Động AI.")
-    else:
-        st.error("❌ Không thể trích xuất khung hình. Video gốc của bạn có thể bị lỗi định dạng. Vui lòng thử lại.")
