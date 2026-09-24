@@ -1,0 +1,126 @@
+# 🚦 Hệ thống Đếm Xe & Cảnh Báo Giao Thông bằng AI
+
+> Nhận diện và đếm **5 loại phương tiện Việt Nam** (Ô tô, Xe máy, Xe tải, Xe bus, Xe ba gác) từ video bằng **YOLOv8 + ByteTrack**, kèm ước lượng **tốc độ xe (km/h)**, **cảnh báo ùn tắc** theo mật độ và tự động **xuất báo cáo CSV**.
+
+Kèm theo:
+- 🖥️ **Ứng dụng Web (Streamlit)** — upload video, vẽ vạch/vùng đếm trên canvas, chạy realtime.
+- 💻 **Ứng dụng Desktop (CustomTkinter)** — giao diện bản địa Windows, đóng gói được bằng PyInstaller.
+
+---
+
+## ✨ Tính năng chính
+
+- 🎯 Model YOLOv8 **tự train** (`best.pt`, ~6MB) nhận diện 5 lớp phương tiện Việt Nam
+- 📏 2 chế độ đếm: **qua vạch (Line Crossing)** và **trong vùng (ROI Polygon)** — vẽ trực tiếp trên giao diện
+- 🚫 **Không đếm trùng** nhờ Object Tracking (ByteTrack, track ID bền theo thời gian)
+- ⚡ **Ước lượng tốc độ** từng xe (đổi pixel→mét, làm mượt bằng EMA)
+- 🚦 **Cảnh báo ùn tắc** realtime theo mật độ xe trong khu vực, tự chụp ảnh bẻ cảnh báo
+- 📄 Xuất **báo cáo CSV** (thời gian, ID xe, loại phương tiện) + video kết quả
+
+## 🧩 Công nghệ
+
+| Hạng mục            | Công nghệ                                   |
+| ------------------- | ------------------------------------------- |
+| Object Detection    | YOLOv8 (Ultralytics)                        |
+| Object Tracking     | ByteTrack (`persist=True`)                  |
+| Xử lý video & đồ họa| OpenCV, NumPy, Pandas                       |
+| Giao diện Web       | Streamlit + streamlit-drawable-canvas       |
+| Giao diện Desktop   | CustomTkinter (Tkinter)                     |
+| Nền tảng            | Python 3.10+                                 |
+
+## 📦 Cài đặt
+
+```bash
+# 1. Clone
+git clone https://github.com/legiaptuanson1234-collab/TGMT.git
+cd TGMT
+
+# 2. Tạo môi trường ảo
+python -m venv venv
+# Windows:
+venv\Scripts\activate
+# macOS/Linux:
+source venv/bin/activate
+
+# 3. Cài dependencies
+pip install -r requirements.txt
+```
+
+> Model `best.pt` (~6MB) đã có sẵn trong repo. Nếu chạy trên server không màn hình,
+> dùng `opencv-python-headless` (đã khai báo trong requirements).
+
+---
+
+## 🌐 Cách chạy
+
+### 1. Ứng dụng Web (Streamlit) — khuyến nghị demo nhanh
+```bash
+streamlit run APP.py
+```
+Mở trình duyệt tại `http://localhost:8501`.
+
+**Cách dùng:**
+1. **Tải video lên** (mp4 / avi / mov)
+2. **Vẽ vạch hoặc vùng đếm** trực tiếp trên canvas (chuột trái thêm điểm, chuột phải xóa)
+3. **Khởi động AI** — xem realtime: bounding box, loại xe + track ID, tốc độ, tổng số xe, FPS, cảnh báo ùn tắc
+4. Kết quả tự lưu vào `Bao_Cao/` (CSV) và `output.mp4` (video)
+
+### 2. Ứng dụng Desktop (CustomTkinter)
+```bash
+python desktop/app_desktop.py
+```
+Giao diện bản địa Windows (3 bước: chọn video → vẽ → đếm). Có thể đóng gói
+thành `.exe` bằng PyInstaller:
+
+```bash
+pyinstaller --windowed --onefile --add-data "best.pt;." desktop/app_desktop.py
+```
+*(trên macOS/Linux dùng `--add-data "best.pt:."`)*
+
+---
+
+## 🧠 Cách hoạt động
+
+- Mỗi frame chạy YOLOv8 → lấy bounding box + lớp xe + **track ID** (ByteTrack `persist=True`).
+- **Line Crossing**: kiểm tra đoạn vị trí cũ→mới của track có cắt vạch đếm
+  (CCW intersection test) — chỉ đếm **1 lần** cho mỗi track ID.
+- **ROI Polygon**: kiểm tra tâm box nằm trong đa giác bằng `cv2.pointPolygonTest`.
+- **Tốc độ**: `(quãng đường px × 0.065 m/px) / thời gian`, làm mượt bằng EMA
+  (khối lượng 0.8/0.2).
+- **Cảnh báo ùn tắc**: đếm xe đang trong khu vực, vượt ngưỡng (Line=28, ROI=10)
+  → đổi nhãn "CANH BAO: UN TAC!" + tự chụp ảnh cảnh báo mỗi 5 giây.
+
+## 📊 Dữ liệu đầu ra (CSV)
+
+| Thoi Gian Ghi Nhan      | ID Xe | Loai Phuong Tien |
+| ----------------------- | ----- | ---------------- |
+| 2026-07-01 13:10:09     | 8     | Xe May           |
+| 2026-07-01 13:10:11     | 1     | O To             |
+| 2026-07-01 13:10:11     | 2     | Xe Tai           |
+
+*(Xem file mẫu: [`outputs/ThongKe_LuuLuong_sample.csv`](outputs/ThongKe_LuuLuong_sample.csv))*
+
+## 🗂️ Cấu trúc dự án
+
+```
+TGMT/
+├── APP.py                 # Giao diện web (Streamlit)
+├── counting.py            # Logic đếm Line & ROI + xuất CSV
+├── tracking.py            # YOLOv8 + ByteTrack, tốc độ, cảnh báo (web)
+├── best.pt                # Model đã train (~6MB)
+├── requirements.txt
+├── desktop/
+│   ├── app_desktop.py     # Giao diện desktop (CustomTkinter)
+│   ├── counting.py        # (bản riêng, có VehicleCounter cho web)
+│   └── tracking.py        # (bản riêng, class TrafficTracker)
+└── outputs/
+    └── ThongKe_LuuLuong_sample.csv   # Báo cáo mẫu
+```
+
+> ⚠️ Hai bản `counting.py` / `tracking.py` ở root và trong `desktop/` hơi khác nhau:
+> root dùng cho Streamlit (hàm + `run_ai_system`), `desktop/` dùng cho CustomTkinter
+> (class `TrafficTracker`). Khi code chung, hãy import từ root.
+
+## 📄 License
+
+MIT

@@ -1,0 +1,19 @@
+# Python
+__pycache__/
+*.pyc
+*.pyd
+venv/
+.env
+
+# PyInstaller / build
+build/
+dist/
+*.spec
+
+# Video & output phát sinh khi chạy app
+video_tam.mp4
+output.mp4
+Bao_Cao/
+Video_Xuat/
+Anh_Bang_Chung/
+*.mp4

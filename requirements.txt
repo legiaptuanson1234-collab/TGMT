@@ -1,4 +1,17 @@
+# Core
+ultralytics
+numpy
+pandas
+
+# Web (Streamlit)
 streamlit==1.24.0
 streamlit-drawable-canvas==0.9.3
-ultralytics
+
+# Desktop (CustomTkinter)
+customtkinter
+Pillow
+
+# OpenCV
+# - Máy có màn hình (đọc/ghi video, hiển thị): opencv-python
+# - Máy chủ không màn hình: opencv-python-headless
 opencv-python-headless
