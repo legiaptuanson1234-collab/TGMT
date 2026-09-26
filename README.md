@@ -14,7 +14,7 @@ Kèm theo:
 - 📏 2 chế độ đếm: **qua vạch (Line Crossing)** và **trong vùng (ROI Polygon)** — vẽ trực tiếp trên giao diện
 - 🚫 **Không đếm trùng** nhờ Object Tracking (ByteTrack, track ID bền theo thời gian)
 - ⚡ **Ước lượng tốc độ** từng xe (đổi pixel→mét, làm mượt bằng EMA)
-- 🚦 **Cảnh báo ùn tắc** realtime theo mật độ xe trong khu vực, tự chụp ảnh bẻ cảnh báo
+- 🚦 **Cảnh báo ùn tắc** realtime theo mật độ xe trong khu vực, tự chụp ảnh cảnh báo
 - 📄 Xuất **báo cáo CSV** (thời gian, ID xe, loại phương tiện) + video kết quả
 
 ## 🧩 Công nghệ
@@ -73,7 +73,11 @@ Giao diện bản địa Windows (3 bước: chọn video → vẽ → đếm). 
 thành `.exe` bằng PyInstaller:
 
 ```bash
-pyinstaller --windowed --onefile --add-data "best.pt;." desktop/app_desktop.py
+pyinstaller --windowed --onefile \
+    --add-data "best.pt;." \
+    --add-data "counting.py;." \
+    --add-data "desktop/traffic_tracker.py;desktop" \
+    desktop/app_desktop.py
 ```
 *(trên macOS/Linux dùng `--add-data "best.pt:."`)*
 
@@ -104,22 +108,21 @@ pyinstaller --windowed --onefile --add-data "best.pt;." desktop/app_desktop.py
 
 ```
 TGMT/
-├── APP.py                 # Giao diện web (Streamlit)
-├── counting.py            # Logic đếm Line & ROI + xuất CSV
-├── tracking.py            # YOLOv8 + ByteTrack, tốc độ, cảnh báo (web)
-├── best.pt                # Model đã train (~6MB)
+├── APP.py                  # Giao diện web (Streamlit)
+├── counting.py             # LOGIC ĐẾM CHUNG: Line & ROI + VehicleCounter + xuất CSV
+├── tracking.py             # YOLOv8 + ByteTrack (bản WEB, hàm run_ai_system)
+├── best.pt                 # Model đã train (~6MB)
 ├── requirements.txt
 ├── desktop/
-│   ├── app_desktop.py     # Giao diện desktop (CustomTkinter)
-│   ├── counting.py        # (bản riêng, có VehicleCounter cho web)
-│   └── tracking.py        # (bản riêng, class TrafficTracker)
+│   ├── app_desktop.py      # Giao diện desktop (CustomTkinter) — bài đếm xe
+│   └── traffic_tracker.py  # class TrafficTracker (bản DESKTOP: tốc độ, cảnh báo, vẽ)
 └── outputs/
     └── ThongKe_LuuLuong_sample.csv   # Báo cáo mẫu
 ```
 
-> ⚠️ Hai bản `counting.py` / `tracking.py` ở root và trong `desktop/` hơi khác nhau:
-> root dùng cho Streamlit (hàm + `run_ai_system`), `desktop/` dùng cho CustomTkinter
-> (class `TrafficTracker`). Khi code chung, hãy import từ root.
+> ℹ️ **Chia sẻ module để tránh trùng code:**
+> - `counting.py` (root) là **nguồn duy nhất** cho logic đếm (`LineCounter`, `PolygonCounter`, `VehicleCounter`, xuất CSV) — cả web lẫn desktop đều import từ đây.
+> - `tracking.py` (web, hàm `run_ai_system`) và `desktop/traffic_tracker.py` (class `TrafficTracker`) là **2 bản riêng** vì web chạy 1 lần trong Streamlit còn desktop chạy vòng lặp realtime bằng `after(10ms)`; desktop import chung `counting.py` nên không còn bản đếm trùng.
 
 ## 📄 License
 
