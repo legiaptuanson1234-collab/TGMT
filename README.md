@@ -149,6 +149,14 @@ TGMT/
 > - `counting.py` (root) là **nguồn duy nhất** cho logic đếm (`LineCounter`, `PolygonCounter`, `VehicleCounter`, xuất CSV) — cả web lẫn desktop đều import từ đây.
 > - `tracking.py` (web, hàm `run_ai_system`) và `desktop/traffic_tracker.py` (class `TrafficTracker`) là **2 bản riêng** vì web chạy 1 lần trong Streamlit còn desktop chạy vòng lặp realtime bằng `after(10ms)`; desktop import chung `counting.py` nên không còn bản đếm trùng.
 
+## 📺 Video mẫu để thử
+
+Thư mục `media/` có `sample_input.mp4` (video đưồng đưỗi có xe) để bạn thử app ngay, không cần tìm video riêng:
+
+```
+media/sample_input.mp4   # chọn vào video này khi chạy app (web hoặc desktop)
+```
+
 ## 📄 License
 
 MIT
