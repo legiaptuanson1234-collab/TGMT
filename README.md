@@ -102,6 +102,12 @@ jupyter notebook   # Mở train/AI.ipynb -> Run All
 
 ---
 
+### 3. Ứng dụng sẵn build (.exe) — Windows
+
+Không cần cài Python: tải file zip từ tab **Releases** của repo, giải nén
+thành `UTT_Traffic_AI/` rồi chạy `UTT_Traffic_AI.exe` (app + model + thư viện đi kèm).
+
+_(Link file exe sẽ được cập nhật tại tab Releases sau khi upload)_
 ## 🧠 Cách hoạt động
 
 - Mỗi frame chạy YOLOv8 → lấy bounding box + lớp xe + **track ID** (ByteTrack `persist=True`).
