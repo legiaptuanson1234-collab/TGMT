@@ -83,6 +83,25 @@ pyinstaller --windowed --onefile \
 
 ---
 
+## 🎓 Huấn luyện model từ đầu
+
+Thư mục `train/` chứa 2 notebook để **tái tạo toàn bộ quy trình train model YOLOv8n**:
+
+| File | Mục đích |
+|---|---|
+| `train/doi_nhan.ipynb` | Đổi nhãn từ class `0` thành `4` (xe ba gác) trong dataset, chuẩn bị data trước khi train |
+| `train/AI.ipynb` | Huấn luyện YOLOv8n (baseline + tối ưu), đánh giá: ma trận nhầm lẫn, loss, accuracy, test thử |
+
+```bash
+# Chạy notebook (cần Jupyter + dataset YOLO đã chuẩn bị)
+jupyter notebook   # Mở train/AI.ipynb -> Run All
+# Sau khi train xong, lấy best.pt từ output để thay file best.pt ở gốc repo
+```
+
+> 2 notebook đã được clear output (nhẹ, không lộ path cá nhân).
+
+---
+
 ## 🧠 Cách hoạt động
 
 - Mỗi frame chạy YOLOv8 → lấy bounding box + lớp xe + **track ID** (ByteTrack `persist=True`).
