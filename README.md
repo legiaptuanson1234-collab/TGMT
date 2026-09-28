@@ -6,7 +6,7 @@
 
 **Hai giao diện dùng chung một "bộ não" AI:**
 - 💻 **Desktop (Windows .exe / CustomTkinter)** — chạy trực tiếp trên máy, không cần trình duyệt
-- 🖥️ **Web (Streamlit)** — chạy trên trình duyệt, hoặc dùng bản demo đã deploy: `_________________` *(link Streamlit Cloud sẽ được cập nhật sau)*
+- 🖥️ **Web (Streamlit)** — chạy trên trình duyệt, hoặc dùng bản demo đã deploy: `https://dxprwoy9sokyzf2p3espvh.streamlit.app` *(link Streamlit Cloud sẽ được cập nhật sau)*
 
 ---
 
@@ -147,13 +147,13 @@ streamlit run APP.py
 # Mở trình duyệt: http://localhost:8501
 ```
 
-**Bản demo online:** `_________________` *(link Streamlit Cloud sẽ được cập nhật sau)*
+**Bản demo online:** `https://dxprwoy9sokyzf2p3espvh.streamlit.app` *(link Streamlit Cloud sẽ được cập nhật sau)*
 
 ### Deploy bản web lên Streamlit Cloud (miễn phí)
 
 1. Vào https://share.streamlit.io → **Deploy an app** → chọn repo **`TGMT`**, branch **`main`**, main file **`APP.py`**
 2. **Python version: `3.10`** · **requirements file: `requirements.txt`** (Cloud tự cài PyTorch CPU — không cần GPU)
-3. Chờ ~2–3 phút build. App chạy ở link `https://...streamlit.app` → dán link đó vào 2 chỗ `_________________` trong README này
+3. Chờ ~2–3 phút build. App chạy ở link `https://...streamlit.app` → dán link đó vào 2 chỗ `https://dxprwoy9sokyzf2p3espvh.streamlit.app` trong README này
 
 > Code đã được vá để chạy an toàn trên Cloud (ghi file ra thư mục tạm, không lỗi với đĩa read-only của Streamlit Cloud).
 

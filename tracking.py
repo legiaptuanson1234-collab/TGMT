@@ -19,6 +19,9 @@ def run_ai_system(model_path, video_in, video_out, counter_obj, stframe):
     class_names = ['O To', 'Xe May', 'Xe Tai', 'Xe Bus', 'Xe Ba Gac']
     
     cap = cv2.VideoCapture(video_in)
+    if not cap.isOpened():
+        stframe.error("Không mở được video trên máy chủ: %s" % video_in)
+        return
     fps_video = int(cap.get(cv2.CAP_PROP_FPS))
     if fps_video == 0: fps_video = 30
     width, height = 1280, 720 

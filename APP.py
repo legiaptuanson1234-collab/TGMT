@@ -23,6 +23,32 @@ def _workfile(name):
     except OSError:
         return os.path.join(tempfile.gettempdir(), name)
 
+
+def _find_content_frame(video_path, max_frames=200):
+    """Tim khung hinh co noi dung dau tien (doc tuan tu tu frame 0, KHONG seek).
+    Seek (cap.set(POS_FRAMES)) that bai im lac tren moi truong Cloud,
+    la nguyen nhân khung nền canvas bi trang. Doc tuan tu tin cay tren moi nenan."""
+    cap = cv2.VideoCapture(video_path)
+    if not cap.isOpened():
+        print("[DEBUG] VideoCapture THAT BAI. path=%s, file exists=%s, size=%s"
+              % (video_path, os.path.exists(video_path),
+                 os.path.getsize(video_path) if os.path.exists(video_path) else "?"))
+        return None
+    idx = 0
+    while idx < max_frames:
+        ret, frame = cap.read()
+        if not ret or frame is None:
+            break
+        gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+        if frame.size > 0 and float(gray.std()) > 20:
+            print("[DEBUG] dung khung %d lam nen (std=%.1f)" % (idx, gray.std()))
+            cap.release()
+            return frame
+        idx += 1
+    print("[DEBUG] khong tim duoc khung co noi dung trong %d frame dau" % max_frames)
+    cap.release()
+    return None
+
 # --- 1. CẤU HÌNH TRANG WEB ---
 st.set_page_config(page_title="Traffic AI - UTT", layout="wide", page_icon="🚦")
 st.title("🚦 HỆ THỐNG ĐẾM XE & CẢNH BÁO GIAO THÔNG AI")
@@ -49,23 +75,18 @@ if uploaded_file is not None:
         with open(video_path, "wb") as f:
             f.write(uploaded_file.getvalue())
             
-        # 2. Trích xuất ảnh
-        cap = cv2.VideoCapture(video_path)
-        
-        # Nhảy đến frame thứ 50 để né mọi màn hình trắng/đen đầu video
-        total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
-        if total_frames > 50:
-            cap.set(cv2.CAP_PROP_POS_FRAMES, 50)
-            
-        ret, frame = cap.read()
-        cap.release()
-        
+        # 2. Trích xuất ảnh NỀN: doc tuan tu, tim khung dau tien co noi dung
+        #    (bo cap.set(POS_FRAMES,50) vi seek that bai tren Cloud -> khung trang)
+        frame = _find_content_frame(video_path)
+
         # 3. Chuyển hệ màu và lưu thẳng vào RAM ảo
-        if ret:
+        if frame is not None:
             frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
             st.session_state.bg_image = Image.fromarray(frame_rgb)
         else:
             st.session_state.bg_image = None
+            st.error("⚠️ Máy chủ không đọc được video (không có khung hợp lệ). "
+                     "Thử video MP4 (H.264) ngắn hơn, hoặc quay lại bằng điện thoại.")
 
     # --- 4. HIỂN THỊ CANVAS TỪ RAM ---
     if "bg_image" in st.session_state and st.session_state.bg_image is not None:

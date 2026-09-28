@@ -1,29 +1,28 @@
 # =========================================================
 # UTT Traffic AI - dependencies
-# Cau hich cho STREAMLIT CLOUD (free tier, CPU-only)
-# Phien ban Python khuyen nghi: 3.10
+# DEPLOY STREAMLIT CLOUD: chon Python 3.12 (KHONG dung 3.13/3.14)
 # =========================================================
 
-# PyTorch CPU (Streamlit Cloud khong co GPU;
-# --extra-index-url de pip chon ban +cpu nho, tranh ban CUDA ~3GB)
+# PyTorch CPU (Cloud khong co GPU; extra-index de pip chon ban +cpu, tranh ban CUDA ~3GB)
 --extra-index-url https://download.pytorch.org/whl/cpu
 torch
 torchvision
 
 # Core AI
 ultralytics
+lap                 # ByteTrack (LAP) - THIEU SE LOI "No module named 'lap'"
 numpy<2
 pandas
 
-# Web (Streamlit)
+# Web (Streamlit) - dung chung phien ban da chay tot
 streamlit==1.24.0
 streamlit-drawable-canvas==0.9.3
-
-# Desktop (CustomTkinter) - khong dung tren Cloud nhung giu de dong bo
-customtkinter
 Pillow
+
+# Desktop (CustomTkinter) - khong dung tren Cloud, giu de dong bo
+customtkinter
 
 # OpenCV
 # - Cloud (khong man hinh): opencv-python-headless
-# - Chay desktop tren may: pip install opencv-python (co man hinh)
+# - Chay desktop tren may co man hinh: pip install opencv-python
 opencv-python-headless
