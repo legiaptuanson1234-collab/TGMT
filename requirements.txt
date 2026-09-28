@@ -26,3 +26,6 @@ customtkinter
 # - Cloud (khong man hinh): opencv-python-headless
 # - Chay desktop tren may co man hinh: pip install opencv-python
 opencv-python-headless
+
+# Bo giai ma video du phong (ffmpeg) - dung khi OpenCV khong mo duoc video
+imageio[ffmpeg]
