@@ -52,7 +52,7 @@ def _find_content_frame(video_path, target_idx=50, max_scan=400):
                 score = std - abs(mean - 120.0) / 5.0
                 if scanned - 1 == target:
                     cap.release()
-                    return frame, ("cv2 OK · nền = frame #{} (std=%.0f) · video có %s frame"
+                    return frame, ("cv2 OK · nền = frame #%d (std=%.0f) · video có %s frame"
                                    % (scanned - 1, std, total or "?"))
                 if score > best_score:
                     best, best_score, best_idx = frame, score, scanned - 1
