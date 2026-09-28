@@ -92,11 +92,7 @@ def run_ai_system(model_path, video_in, video_out, counter_obj, stframe,
                 if counter_obj.check_and_count(cx, cy, track_id, int(cls_id)):
                     is_flash_frame = True
 
-                if hasattr(counter_obj, 'roi_points'):
-                    if cv2.pointPolygonTest(np.array(counter_obj.roi_points, dtype=np.int32),
-                                            (cx, cy), False) >= 0:
-                        current_active_vehicles += 1
-                else:
+                if counter_obj.is_active(cx, cy):
                     current_active_vehicles += 1
 
                 color = (0, 255, 0) if int(cls_id) == 4 else (255, 150, 0)
@@ -143,7 +139,7 @@ def run_ai_system(model_path, video_in, video_out, counter_obj, stframe,
         fps_smooth = 0.9 * fps_smooth + 0.1 * fps_current
 
         status_text, status_color = "MAT DO: VANG", (0, 255, 0)
-        limit = 10 if hasattr(counter_obj, 'roi_points') else 28
+        limit = getattr(counter_obj, 'congestion_limit', 28)
         if current_active_vehicles > limit:
             status_text, status_color = "CANH BAO: UN TAC!", (0, 0, 255)
             if current_time - last_save_time > 5:
