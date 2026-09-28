@@ -14,9 +14,11 @@ lap                 # ByteTrack (LAP) - THIEU SE LOI "No module named 'lap'"
 numpy<2
 pandas
 
-# Web (Streamlit) - dung chung phien ban da chay tot
-streamlit==1.24.0
-streamlit-drawable-canvas==0.9.3
+# Web (Streamlit)
+# - Canvas 0.13 coa suua bug nen bang tren Streamlit Cloud (issue #142 cua thu vien)
+#   -> phai dung Streamlit >=1.53 (ban cu 1.24 + canvas 0.9.3: nen mat khi ve)
+streamlit>=1.53,<2
+streamlit-drawable-canvas>=0.13
 Pillow
 
 # Desktop (CustomTkinter) - khong dung tren Cloud, giu de dong bo
