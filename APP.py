@@ -1,16 +1,16 @@
 import streamlit as st
 import cv2
-from PIL import Image
+from PIL import Image, ImageDraw
 from streamlit_drawable_canvas import st_canvas
 
 # --- NHẬP CÁC MODULE AI CỦA BẠN ---
-from tracking import run_ai_system
+from tracking import run_ai_fast, run_ai_quality
 from counting import VehicleCounter
 
 import os
 import tempfile
 
-BUILD_TAG = "TGMT-v3 · cloud-fix (video-diagnostic + keyerror-fix)"
+BUILD_TAG = "TGMT-v4 · cloud-fix (nền tham khảo + toạ độ thủ công + hiệu năng)"
 
 
 def _workfile(name):
@@ -32,15 +32,10 @@ def _frame_stats(frame):
 
 
 def _find_content_frame(video_path, target_idx=50, max_scan=400):
-    """Lấy khung làm NỀN cho canvas: đọc TUẦN TỰ từ frame 0 (lệnh seek
-    cap.set(POS_FRAMES) thất bại im lặng trên Cloud), ưu tiên khung có
-    NỘI DUNG THẬT (tránh khung trắng/đen mở đầu video).
-
-    Nếu OpenCV không mở được file -> fallback bằng imageio-ffmpeg
-    (bộ giải mã độc lập, hỗ trợ H.264).
-
-    Trả về (frame|None, thông_báo_chẩn_đoán).
-    """
+    """Lấy khung làm NỀN: đọc TUẦN TỰ từ frame 0 (seek cap.set thất bại trên
+    Cloud), ưu tiên khung có NỘI DUNG THẬT (tránh khung trắng/đen mở đầu).
+    Fallback bằng imageio/ffmpeg nếu OpenCV không mở được file.
+    Trả về (frame|None, thông_báo_chẩn_đoán)."""
     cap = cv2.VideoCapture(video_path)
     if cap.isOpened():
         total = int(cap.get(cv2.CAP_PROP_FRAME_COUNT) or 0)
@@ -53,52 +48,50 @@ def _find_content_frame(video_path, target_idx=50, max_scan=400):
                 break
             scanned += 1
             mean, std = _frame_stats(frame)
-            # "có nội dung thật": đủ chi tiết + không gần trắng/đen
             if std > 20 and 30 < mean < 225:
                 score = std - abs(mean - 120.0) / 5.0
                 if scanned - 1 == target:
                     cap.release()
-                    return frame, ("cv2 OK · nền = frame #{}".format(scanned - 1)
-                                   + " (std=%.0f) · video có %s frame" % (std, total or "?"))
+                    return frame, ("cv2 OK · nền = frame #{} (std=%.0f) · video có %s frame"
+                                   % (scanned - 1, std, total or "?"))
                 if score > best_score:
                     best, best_score, best_idx = frame, score, scanned - 1
         cap.release()
         if best is not None:
-            return best, ("cv2 OK · nền = frame #%d (khung chi tiết nhất trong %d frame, std≈%.0f)"
-                         % (best_idx, scanned, best_score))
-        return None, ("cv2 mở được file nhưng %d frame đầu đều trắng/đen (video %s frame) "
-                      "- video có thể toàn khung trắng" % (scanned, total or "?"))
+            return best, ("cv2 OK · nền = frame #%d (chi tiết nhất trong %d frame)"
+                         % (best_idx, scanned))
+        return None, ("cv2 mở được file nhưng %d frame đầu đều trắng/đen" % scanned)
 
     # ---- Fallback: imageio + ffmpeg (bộ giải mã độc lập với OpenCV) ----
     try:
         import imageio
         reader = imageio.v2.get_reader(video_path, "ffmpeg")
         best, best_score, best_idx, n = None, -1.0, -1, 0
+        target = min(target_idx, 49)
         while n < max_scan:
             fr = reader.read()
-            if fr is None or (hasattr(fr, "size") and fr.size == 0):
+            if fr is None:
                 break
             n += 1
-            fr = cv2.cvtColor(fr, cv2.COLOR_RGB2BGR)  # trả về BGR, khớp OpenCV
+            fr = cv2.cvtColor(fr, cv2.COLOR_RGB2BGR)
             mean, std = _frame_stats(fr)
             if std > 20 and 30 < mean < 225:
                 score = std - abs(mean - 120.0) / 5.0
-                if n - 1 == min(target_idx, 49):
-                    return fr, "cv2 KHÔNG mở được video -> đã dùng bộ giải mã ffmpeg (nền = frame #%d)" % (n - 1)
+                if n - 1 == target:
+                    return fr, "cv2 KHÔNG mở được video -> đã dùng ffmpeg · nền = frame #%d" % (n - 1)
                 if score > best_score:
                     best, best_score, best_idx = fr, score, n - 1
         if best is not None:
-            return best, "cv2 KHÔNG mở được video -> đã dùng bộ giải mã ffmpeg (nền = frame #%d, chi tiết nhất)" % best_idx
-        return None, ("cả OpenCV lẫn ffmpeg không đọc được video. File đã lưu: %s (%s KB)"
-                      % (video_path, os.path.getsize(video_path) // 1024 if os.path.exists(video_path) else "?"))
+            return best, "cv2 KHÔNG mở được video -> đã dùng ffmpeg · nền = frame #%d" % best_idx
+        return None, ("cả OpenCV lẫn ffmpeg không đọc được video (%s)" % video_path)
     except Exception as _e:
-        return None, ("cv2 KHÔNG MỞ được video (%s) và fallback ffmpeg lỗi: %s. Thử upload video MP4 (H.264) khác."
+        return None, ("cv2 KHÔNG MỞ được video (%s) và fallback ffmpeg lỗi: %s"
                       % (video_path, _e))
 
 
 def _extract_points(objects, drawing_mode):
-    """Lấy tọa độ từ st_canvas AN TOÀN (tránh KeyError khi canvas còn giữ
-    nhiều hình khác loại - vd vạch Line cũ khi đã chuyển sang ROI)."""
+    """Lấy toạ độ từ st_canvas AN TOÀN (tránh KeyError khi canvas còn nhiều
+    hình khác loại - vd vạch Line cũ khi đã chuyển sang ROI)."""
     if drawing_mode == "line":
         for obj in objects:
             if "x1" in obj and "x2" in obj:
@@ -106,7 +99,6 @@ def _extract_points(objects, drawing_mode):
                 return [(left + int(obj["x1"]), top + int(obj["y1"])),
                         (left + int(obj["x2"]), top + int(obj["y2"]))]
         return []
-    # polygon / free
     for obj in objects:
         pts = []
         for p in obj.get("path", []):
@@ -118,6 +110,22 @@ def _extract_points(objects, drawing_mode):
         if len(pts) >= 3:
             return pts
     return []
+
+
+def _with_grid(img_pil):
+    """Vẽ lưới + mốc 100px để căn toạ độ (toạ độ đếm = toạ độ ảnh gốc
+    1280x720, mốc lưới giúp ước lượng khi nhập thủ công)."""
+    img = img_pil.convert("RGB")
+    w, h = img.size
+    d = ImageDraw.Draw(img, "RGBA")
+    for x in range(0, w + 1, 100):
+        d.line([(x, 0), (x, h)], fill=(255, 80, 0, 120), width=1)
+    for y in range(0, h + 1, 100):
+        d.line([(0, y), (w, y)], fill=(255, 80, 0, 120), width=1)
+    for x in range(0, w + 1, 200):
+        for y in range(0, h + 1, 200):
+            d.text((x + 3, y + 3), f"{x},{y}", fill=(255, 255, 0))
+    return img
 
 
 # --- 1. CẤU HÌNH TRANG WEB ---
@@ -133,9 +141,14 @@ with st.sidebar:
 
     uploaded_file = st.file_uploader("1. Tải Video Lên", type=['mp4', 'avi', 'mov'])
     mode = st.radio("2. Chế Độ Phân Tích", ["Đếm Vạch (Line)", "Đếm Vùng (ROI)"])
+    perf_mode = st.radio(
+        "3. Tốc Độ",
+        ["Nhanh (CPU - khuyến nghị demo)", "Chất lượng (GPU)"],
+        help="Máy chủ chạy CPU: chọn Nhanh (YOLO 640x360, ~gấp 3-4 lần). "
+             "Máy có GPU: chọn Chất lượng (YOLO 1280x720).")
     btn_run = st.button("🚀 KHỞI ĐỘNG AI", type="primary", use_container_width=True)
 
-# --- 3. XỬ LÝ VIDEO & BẢNG VẼ CANVAS (SIÊU MƯỢT) ---
+# --- 3. XỬ LÝ VIDEO & BẢNG VẼ CANVAS ---
 if uploaded_file is not None:
     video_path = _workfile("video_tam.mp4")
 
@@ -158,7 +171,7 @@ if uploaded_file is not None:
         else:
             st.session_state.bg_image = None
             st.error("⚠️ " + bg_info)
-            st.info("📹 Xem video gốc bằng trình duyệt (pro trình duyệt tự giải mã H.264):")
+            st.info("📹 Xem video gốc bằng trình duyệt (tự giải mã H.264):")
             st.video(uploaded_file)
 
     # --- 4. HIỂN THỊ CANVAS TỪ RAM ---
@@ -166,11 +179,17 @@ if uploaded_file is not None:
         image_pil = st.session_state.bg_image
 
         st.subheader("Bước 1: Vẽ Vạch/Vùng Cảnh Báo")
-        st.markdown(f"**Chế độ hiện tại:** {mode}. Hãy dùng chuột click và vẽ trực tiếp lên ảnh dưới đây.")
+        st.markdown(f"**Chế độ hiện tại:** {mode}. Vẽ trên canvas, hoặc **nhập toạ độ thủ công** bên dưới.")
 
         drawing_mode = "line" if mode == "Đếm Vạch (Line)" else "polygon"
 
-        # Vẽ mượt mà, không bị load lại video
+        # (a) ẢNH NỀN THAM KHẢO (KHÔNG BỊ TRẮNG KHI CHUỘT CHẠY) - có lưới căn toạ độ
+        st.markdown("**📷 Ảnh nền (tham khảo để căn vẽ):**")
+        st.image(_with_grid(image_pil), use_container_width=True)
+        st.caption("Toạ độ hệ 1280×720 (góc trên-trái = 0,0). Lưới mỗi 100px, mốc mỗi 200px.")
+
+        # (b) Canvas để vẽ nhanh (chuột) - nếu nền trắng vẫn dùng được (c)
+        st.markdown("**✏️ Vẽ nhanh bằng chuột (Line: kéo 1 nét · ROI: click từng góc):**")
         canvas_result = st_canvas(
             fill_color="rgba(255, 165, 0, 0.3)",
             stroke_width=3,
@@ -183,31 +202,49 @@ if uploaded_file is not None:
             key="canvas",
         )
 
+        # (c) Ô NHẬP TOẠ ĐỘ THỦ CÔNG - LUÔN DÙNG ĐƯỢC, CHUẨN CHỈNH NHẤT
+        canvas_pts = _extract_points(
+            canvas_result.json_data["objects"]
+            if canvas_result.json_data is not None else [],
+            drawing_mode)
+        default = (" ".join(f"{x},{y}" for x, y in canvas_pts)) if canvas_pts else ""
+        manual = st.text_input(
+            "🎯 Toạ độ chính xác (ưu tiên khi canvas bị trắng): Line: `x1,y1 x2,y2` · "
+            "ROI: `x1,y1 x2,y2 x3,y3...` (toạ độ ảnh 1280×720, mốc lưới giúp căn)",
+            value=default, key="manual_pts",
+            placeholder="vd Line: 200,400 900,400 · vd ROI: 200,200 800,200 800,600 200,600")
+
         # --- 5. KÍCH HOẠT AI ---
         if btn_run:
             st.markdown("---")
             st.subheader("📟 Màn Hình Giám Sát Real-time")
 
-            if canvas_result.json_data is not None and len(canvas_result.json_data["objects"]) > 0:
-                objects = canvas_result.json_data["objects"]
-                st.success("[✔] Đã nhận được tọa độ. Đang khởi động AI...")
-
-                stframe = st.empty()
-
-                # Lấy tọa độ AN TOÀN (không KeyError khi canvas còn giữ
-                # hình khác loại - ví dụ vạch Line cũ khi đã chuyển sang ROI)
-                points = _extract_points(objects, drawing_mode)
-                need = 2 if drawing_mode == "line" else 3
-                if len(points) < need:
-                    st.warning("⚠️ Chưa đủ điểm để đếm (cần ≥%d). Xóa hình cũ (chuột phải) rồi vẽ lại." % need)
-                else:
-                    counter_obj = VehicleCounter(mode=drawing_mode, points=points)
+            # Ưu tiên toạ độ THỦ CÔNG (người dùng gõ = chuẩn nhất)
+            points, used_manual = [], False
+            if manual.strip():
+                for pair in manual.split():
                     try:
-                        # Video đã có sẵn trên đĩa từ bước trên, gọi thẳng ra chạy
-                        run_ai_system("best.pt", video_path, _workfile("output.mp4"), counter_obj, stframe)
-                        st.balloons()
-                        st.success("🎉 Luồng phân tích giao thông đã hoàn tất!")
-                    except Exception as e:
-                        st.error(f"❌ Có lỗi xảy ra trong quá trình tính toán: {e}")
+                        xs, ys = pair.split(",")
+                        points.append((int(xs), int(ys)))
+                        used_manual = True
+                    except ValueError:
+                        pass
+            if not used_manual:
+                points = canvas_pts
+
+            need = 2 if drawing_mode == "line" else 3
+            if len(points) < need:
+                st.warning(f"⚠️ Chưa đủ điểm (cần ≥{need}). Vẽ lại hoặc nhập toạ độ ở ô bên trên.")
             else:
-                st.error("❌ BẠN CHƯA VẼ VẠCH HAY VÙNG ROI! Vui lòng dùng chuột vẽ lên hình trước khi bấm Khởi Động AI.")
+                st.write(f"Điểm đang dùng: `{[f'{x},{y}' for x, y in points]}` "
+                         f"({len(points)}/{'∞'} · nguồn: {'nhập tay' if used_manual else 'canvas'})")
+                counter_obj = VehicleCounter(mode=drawing_mode, points=points)
+
+                runner = run_ai_quality if perf_mode.startswith("Chất lượng") else run_ai_fast
+                try:
+                    runner("best.pt", video_path, _workfile("output.mp4"), counter_obj, st.empty())
+                    st.balloons()
+                    st.success("🎉 Luồng phân tích giao thông đã hoàn tất! "
+                               "Báo cáo CSV lưu trong `Bao_Cao/`, video kết quả trong `Video_Xuat/`.")
+                except Exception as e:
+                    st.error(f"❌ Có lỗi xảy ra trong quá trình tính toán: {e}")
