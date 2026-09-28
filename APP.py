@@ -19,6 +19,10 @@ BUILD_TAG = "TGMT-v5 · vẽ trực tiếp trên ảnh (canvas fix nền trắng
 
 # Kích thước chuẩn để toạ độ vẽ == toạ độ đếm (1280x720)
 W, H = DISPLAY_W, DISPLAY_H  # 1280 x 720
+# Canvas hien thi o kich thuoc nho hon de fit man hinh (thay du duong),
+# toa do ve duoc qui ve he 1280x720 (hinh dem) bang he so SX, SY.
+DX, DY = 960, 540
+SX, SY = W / float(DX), H / float(DY)
 
 
 def _workfile(name):
@@ -106,26 +110,25 @@ def _bake_grid(rgb_img_w1280x720):
     return img
 
 
-def _extract_points(objects, drawing_mode):
-    """Lấy toạ độ AN TOÀN từ canvas (tránh KeyError khi canvas còn nhiều
-    hình khác loại - vd vạch Line cũ khi đã chuyển sang ROI).
-    Canvas được hiển thị đúng 1280x720 nên toạ độ trả về chính là toạ độ đếm."""
+def _extract_points(objects, drawing_mode, sx=1.0, sy=1.0):
+    """Lấy toạ độ AN TOÀN từ canvas rồi qui về hệ 1280x720 (hệ toạ độ đếm).
+    sx,sy: hệ số đổi toạ độ canvas HIỂN THỊ (CX x CY) sang toạ độ đếm (1280x720).
+    - Line: obj có x1,y1,x2,y2 (tương đối so với left/top).
+    - Polygon/Free: obj có 'path' (list điểm [x,y,rx,ry,...] hoặc [x,y])."""
     if drawing_mode == "line":
         for obj in objects:
             if "x1" in obj and "x2" in obj:
                 left, top = int(obj.get("left", 0)), int(obj.get("top", 0))
-                return [(left + int(obj["x1"]), top + int(obj["y1"])),
-                        (left + int(obj["x2"]), top + int(obj["y2"]))]
+                p1 = (int((left + int(obj["x1"])) * sx), int((top + int(obj["y1"])) * sy))
+                p2 = (int((left + int(obj["x2"])) * sx), int((top + int(obj["y2"])) * sy))
+                return [p1, p2]
         return []
     for obj in objects:
         pts = []
-        for p in obj.get("path", []):
-            if isinstance(p, (list, tuple)):
-                if len(p) >= 3:
-                    pts.append((int(p[1]), int(p[2])))
-                elif len(p) == 2:
-                    pts.append((int(p[0]), int(p[1])))
-        if len(pts) >= 3:
+        for p in (obj.get("path") or []):
+            if isinstance(p, (list, tuple)) and len(p) >= 2:
+                pts.append((int(p[0] * sx), int(p[1] * sy)))
+        if pts:
             return pts
     return []
 
@@ -183,7 +186,15 @@ if uploaded_file is not None:
         # Ảnh nền CÓ LƯỚI + MỐC TOẠ ĐỘ, đúng 1280x720 -> vẽ chính bằng đếm
         bg_pil = _bake_grid(st.session_state.bg_image)
 
+        # NUT "QUAY LAI / VÉ LAI" (dat duoi duong subheader ben duoi)
+        _ck = st.session_state.get("_canvas_seq", 0)
+        if st.button("🗑️ Xoá hết & Vẽ lại", key="reset_draw"):
+            st.session_state["_canvas_seq"] = _ck + 1
+            st.session_state.pop("manual_pts", None)
+            st.rerun()
+
         st.subheader("🖊️ Vẽ vạch / vùng ngay trên ảnh (sau đó bấm KHỞI ĐỘNG AI)")
+        st.caption("💡 Vẽ xong mà muốn sửa/bỏ: bấm **🗑️ Xoá hết & Vẽ lại** ở trên, hoặc dùng thanh công cụ của canvas (mũi tên ↔, thùng rác).")
 
         canvas_pts = []
         if _HAS_CANVAS:
@@ -200,15 +211,15 @@ if uploaded_file is not None:
                     stroke_color="#00FF00",
                     background_image=_bg_uri,
                     update_streamlit=True,
-                    height=H,
-                    width=W,
+                    height=DY,
+                    width=DX,
                     drawing_mode=drawing_mode,
-                    key="draw_canvas",
+                    key="draw_canvas_%d" % _ck,
                 )
                 canvas_pts = _extract_points(
                     canvas_result.json_data["objects"]
                     if canvas_result.json_data is not None else [],
-                    drawing_mode)
+                    drawing_mode, SX, SY)
             except Exception as _ce:
                 st.warning("Canvas không khả dụng trên máy chủ (%s). Dùng toạ độ thủ công bên dưới." % _ce)
                 canvas_pts = []
