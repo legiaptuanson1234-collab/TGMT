@@ -207,7 +207,10 @@ if uploaded_file is not None:
 
     # --- 4. VẼ TRỰC TIẾP TRÊN KHUNG ĐƯỜNG (1 mặt vẽ duy nhất) ---
     if "bg_image" in st.session_state and st.session_state.bg_image is not None:
-        drawing_mode = "line" if mode == "Đếm Vạch (Line)" else "polygon"
+        # ROI dung che do "rect" (keo 1 hop chu nhat) thay vi "polygon" (click
+        # tung goc) vi rect luu toa do left/top/width/height TUYET DOI -> 100%
+        # chinh xac, khong lech nhu polygon (diem tuong doi gay lech khi chay).
+        drawing_mode = "line" if mode == "Đếm Vạch (Line)" else "rect"
         # Ảnh nền CÓ LƯỚI + MỐC TOẠ ĐỘ, đúng 1280x720 -> vẽ chính bằng đếm
         bg_pil = _bake_grid(st.session_state.bg_image)
 
@@ -253,7 +256,7 @@ if uploaded_file is not None:
             st.image(bg_pil)
             st.caption("(Không có canvas - nhập toạ độ thủ công bên dưới)")
 
-        st.caption("Mẹo: Line = kéo 1 nét ngang dải đường · ROI = click từng góc. "
+        st.caption("Mẹo: Line = kéo 1 nét ngang dải đường · ROI = kéo 1 hộp chữ nhật quanh dải đường cần đếm. "
                    "Nhìn mốc toạ độ (màu vàng) để định vị.")
 
         # Ô toạ độ THỦ CÔNG (dự phòng + chỉnh lại số cho chính xác)
