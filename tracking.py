@@ -28,12 +28,14 @@ def _run(model, cap, frame, proc_w, proc_h, conf):
 
 
 def run_ai_system(model_path, video_in, video_out, counter_obj, stframe,
-                  proc_w=640, proc_h=360, skip=1, conf=0.35):
+                  proc_w=640, proc_h=360, skip=1, conf=0.35, disp_every=2):
     """Chay he dem xe.
 
-    proc_w/proc_h: kich thoai dung cho YOLO (nho = nhanh, CPU nen dung 480x270
-                  hoac 640x360; GPU/chat luong cao dung 1280x720).
-    skip: xu ly 1/khoang N frame (1 = moi frame, 2 = moi 2 frame -> nhanh hon).
+    proc_w/proc_h: kich thoai dung cho YOLO (nho = nhanh; CPU dung 480x270,
+                  GPU/chat luong cao dung 1280x720).
+    skip: xu ly 1/khoang N frame (2 = moi 2 frame -> nhanh gap 2 lan).
+    disp_every: gui 1 anh ve trinh duyet / disp_every frame (giam = nhe hon
+                kenh Streamlit tren Cloud).
     Toa do dem ve luon qui ve hinh that 1280x720 (nong voi hinh nen va diem ve).
     """
     model = YOLO(model_path)
@@ -101,7 +103,7 @@ def run_ai_system(model_path, video_in, video_out, counter_obj, stframe,
                 cv2.rectangle(frame, (bx1, by1), (bx2, by2), color, 2)
                 cv2.circle(frame, (cx, cy), 5, (0, 0, 255), -1)
                 cv2.putText(frame, "%s ID:%d" % (class_names[int(cls_id)], track_id),
-                            (bx1, max(bx1 - 10, 12)), cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 2)
+                            (bx1, max(by1 - 10, 12)), cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 2)
 
                 track = track_history[track_id]
                 track.append((cx, cy))
@@ -168,10 +170,9 @@ def run_ai_system(model_path, video_in, video_out, counter_obj, stframe,
         cv2.putText(frame, status_text, (290, 32), cv2.FONT_HERSHEY_DUPLEX, 0.6, status_color, 1)
 
         out.write(frame)
-        if frame_count % 2 == 0:
-            disp = cv2.resize(frame, (1024, 576))
-            stframe.image(cv2.cvtColor(disp, cv2.COLOR_BGR2RGB), channels="RGB",
-                          use_column_width=True)
+        if frame_count % max(1, disp_every) == 0:
+            disp = cv2.resize(frame, (848, 477))
+            stframe.image(cv2.cvtColor(disp, cv2.COLOR_BGR2RGB), channels="RGB")
 
     cap.release()
     out.release()
@@ -180,10 +181,19 @@ def run_ai_system(model_path, video_in, video_out, counter_obj, stframe,
 def run_ai_quality(model_path, video_in, video_out, counter_obj, stframe):
     """Chat luong cao (GPU): YOLO 1280x720, moi frame."""
     return run_ai_system(model_path, video_in, video_out, counter_obj, stframe,
-                        proc_w=1280, proc_h=720, skip=1, conf=0.45)
+                        proc_w=1280, proc_h=720, skip=1, conf=0.45, disp_every=2)
 
 
 def run_ai_fast(model_path, video_in, video_out, counter_obj, stframe):
     """Hieu nang (CPU): YOLO 640x360, moi frame, conf thap de bat du xe nho."""
     return run_ai_system(model_path, video_in, video_out, counter_obj, stframe,
-                        proc_w=640, proc_h=360, skip=1, conf=0.35)
+                        proc_w=640, proc_h=360, skip=1, conf=0.35, disp_every=2)
+
+
+def run_ai_turbo(model_path, video_in, video_out, counter_obj, stframe):
+    """Sieu nhanh (CPU demo tren Cloud): YOLO 480x270, bat moi 2 frame,
+    gui anh ve trinh duyet moi 4 frame -> FPS thuc dung nhat (nhanh ~3-4 lan
+    so voi run_ai_fast). Dan: chi dung de DEMO tren may chu, don xe rat
+    nhanh co the bi bot (track gap)."""
+    return run_ai_system(model_path, video_in, video_out, counter_obj, stframe,
+                        proc_w=480, proc_h=270, skip=2, conf=0.30, disp_every=4)

@@ -6,7 +6,7 @@ import os
 import tempfile
 
 # --- NHẬP CÁC MODULE AI CỦA BẠN ---
-from tracking import run_ai_fast, run_ai_quality, DISPLAY_W, DISPLAY_H
+from tracking import run_ai_fast, run_ai_quality, run_ai_turbo, DISPLAY_W, DISPLAY_H
 from counting import VehicleCounter
 
 try:
@@ -144,8 +144,9 @@ with st.sidebar:
     mode = st.radio("2. Chế Độ Phân Tích", ["Đếm Vạch (Line)", "Đếm Vùng (ROI)"])
     perf_mode = st.radio(
         "3. Tốc Độ",
-        ["Nhanh (CPU - demo)", "Chất lượng (GPU)"],
-        help="Máy chủ chạy CPU: chọn Nhanh (YOLO 640x360). Có GPU: chọn Chất lượng (1280x720).")
+        ["Siêu nhanh (CPU demo)", "Nhanh (CPU)", "Chất lượng (GPU)"],
+        help="Cloud chạy CPU. 'Siêu nhanh': YOLO 480x270 + bỏ qua frame, FPS cao nhất để demo. "
+             "'Nhanh': 640x360 chuẩn. 'Chất lượng': 1280x720 (máy có GPU).")
     def _btn_full_width(label):
         """Nút chạy ngang (tương thích Streamlit cũ 1.24 lẫn mới ≥1.53)."""
         try:
@@ -187,11 +188,17 @@ if uploaded_file is not None:
         canvas_pts = []
         if _HAS_CANVAS:
             try:
+                # Nen CANVAS: dung DATA-URI base64 (khong phu thuc vao file-serving
+                # cua Streamlit) -> nen luon hien di khi ve, fix bug nen trang tren Cloud.
+                import io, base64
+                _buf = io.BytesIO()
+                bg_pil.save(_buf, format="PNG")
+                _bg_uri = "data:image/png;base64," + base64.b64encode(_buf.getvalue()).decode("ascii")
                 canvas_result = st_canvas(
                     fill_color="rgba(255, 165, 0, 0.25)",
                     stroke_width=3,
                     stroke_color="#00FF00",
-                    background_image=bg_pil,
+                    background_image=_bg_uri,
                     update_streamlit=True,
                     height=H,
                     width=W,
@@ -244,7 +251,12 @@ if uploaded_file is not None:
                 st.write("Điểm đếm: " + " · ".join("%d,%d" % p for p in points)
                          + "   *(nguồn: %s)*" % ("nhập tay" if used_manual else "vẽ trên ảnh"))
                 counter_obj = VehicleCounter(mode=drawing_mode, points=points)
-                runner = run_ai_quality if perf_mode.startswith("Chất lượng") else run_ai_fast
+                if perf_mode.startswith("Chất lượng"):
+                    runner = run_ai_quality
+                elif perf_mode.startswith("Siêu nhanh"):
+                    runner = run_ai_turbo
+                else:
+                    runner = run_ai_fast
                 try:
                     runner("best.pt", video_path, _workfile("output.mp4"), counter_obj, st.empty())
                     st.balloons()
