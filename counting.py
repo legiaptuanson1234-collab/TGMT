@@ -2,7 +2,20 @@ import cv2
 import numpy as np
 import os
 import csv
+import tempfile
 from datetime import datetime
+
+
+def _safe_dir(name):
+    """Thư mục lưu kết quả: dùng thư mục hiện tại nếu ghi được (local);
+    nếu không (Streamlit Cloud, đĩa read-only) thì dùng thư mục tạm."""
+    try:
+        os.makedirs(name, exist_ok=True)
+        return name
+    except (PermissionError, OSError):
+        alt = os.path.join(tempfile.gettempdir(), name)
+        os.makedirs(alt, exist_ok=True)
+        return alt
 
 class BaseCounter:
     def __init__(self):
@@ -14,8 +27,7 @@ class BaseCounter:
         # ==========================================
         # SỬA THÀNH ĐƯỜNG DẪN TƯƠNG ĐỐI (DÙNG ĐƯỢC TRÊN WEB)
         # ==========================================
-        self.save_dir = 'Bao_Cao'
-        os.makedirs(self.save_dir, exist_ok=True)
+        self.save_dir = _safe_dir('Bao_Cao')
         time_str = datetime.now().strftime('%Y%m%d_%H%M%S')
         self.csv_file = os.path.join(self.save_dir, f'ThongKe_LuuLuong_{time_str}.csv')
         

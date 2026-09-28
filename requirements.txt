@@ -1,17 +1,29 @@
-# Core
+# =========================================================
+# UTT Traffic AI - dependencies
+# Cau hich cho STREAMLIT CLOUD (free tier, CPU-only)
+# Phien ban Python khuyen nghi: 3.10
+# =========================================================
+
+# PyTorch CPU (Streamlit Cloud khong co GPU;
+# --extra-index-url de pip chon ban +cpu nho, tranh ban CUDA ~3GB)
+--extra-index-url https://download.pytorch.org/whl/cpu
+torch
+torchvision
+
+# Core AI
 ultralytics
-numpy
+numpy<2
 pandas
 
 # Web (Streamlit)
 streamlit==1.24.0
 streamlit-drawable-canvas==0.9.3
 
-# Desktop (CustomTkinter)
+# Desktop (CustomTkinter) - khong dung tren Cloud nhung giu de dong bo
 customtkinter
 Pillow
 
 # OpenCV
-# - Máy có màn hình (đọc/ghi video, hiển thị): opencv-python
-# - Máy chủ không màn hình: opencv-python-headless
+# - Cloud (khong man hinh): opencv-python-headless
+# - Chay desktop tren may: pip install opencv-python (co man hinh)
 opencv-python-headless

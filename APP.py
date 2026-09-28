@@ -5,7 +5,23 @@ from streamlit_drawable_canvas import st_canvas
 
 # --- NHẬP CÁC MODULE AI CỦA BẠN ---
 from tracking import run_ai_system
-from counting import VehicleCounter 
+from counting import VehicleCounter
+
+import os
+import tempfile
+
+
+def _workfile(name):
+    """Đường dẫn ghi file an toàn: dùng thư mục hiện tại nếu ghi được (local);
+    nếu không (Streamlit Cloud, đĩa read-only) thì dùng thư mục tạm."""
+    try:
+        probe = os.path.join(os.getcwd(), ".__probe")
+        with open(probe, "w") as f:
+            f.write("")
+        os.remove(probe)
+        return os.path.join(os.getcwd(), name)
+    except OSError:
+        return os.path.join(tempfile.gettempdir(), name)
 
 # --- 1. CẤU HÌNH TRANG WEB ---
 st.set_page_config(page_title="Traffic AI - UTT", layout="wide", page_icon="🚦")
@@ -23,7 +39,7 @@ with st.sidebar:
 
 # --- 3. XỬ LÝ VIDEO & BẢNG VẼ CANVAS (SIÊU MƯỢT) ---
 if uploaded_file is not None:
-    video_path = "video_tam.mp4"
+    video_path = _workfile("video_tam.mp4")
     
     # CHỈ XỬ LÝ FILE KHI LÀ VIDEO MỚI (CHỐNG GIẬT LAG KHI CLICK CHUỘT)
     if "last_filename" not in st.session_state or st.session_state.last_filename != uploaded_file.name:
@@ -101,7 +117,7 @@ if uploaded_file is not None:
                 
                 try:
                     # Video đã có sẵn trên đĩa từ bước trên, gọi thẳng ra chạy
-                    run_ai_system("best.pt", video_path, "output.mp4", counter_obj, stframe)
+                    run_ai_system("best.pt", video_path, _workfile("output.mp4"), counter_obj, stframe)
                     st.balloons()
                     st.success("🎉 Luồng phân tích giao thông đã hoàn tất!")
                 except Exception as e:

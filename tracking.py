@@ -11,6 +11,7 @@ warnings.filterwarnings("ignore")
 os.environ['OPENCV_LOG_LEVEL'] = 'SILENT'
 os.environ['YOLO_VERBOSE'] = 'False'
 logging.getLogger("ultralytics").setLevel(logging.ERROR)
+from counting import _safe_dir
 
 def run_ai_system(model_path, video_in, video_out, counter_obj, stframe):
     print("[*] Đang khởi động bộ não YOLOv8...")
@@ -23,8 +24,7 @@ def run_ai_system(model_path, video_in, video_out, counter_obj, stframe):
     width, height = 1280, 720 
     out = cv2.VideoWriter(video_out, cv2.VideoWriter_fourcc(*'mp4v'), fps_video, (width, height))
     
-    save_folder = "Anh_Bang_Chung"
-    os.makedirs(save_folder, exist_ok=True)
+    save_folder = _safe_dir("Anh_Bang_Chung")
     
     prev_time = time.time()
     last_save_time = 0

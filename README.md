@@ -149,6 +149,14 @@ streamlit run APP.py
 
 **Bản demo online:** `_________________` *(link Streamlit Cloud sẽ được cập nhật sau)*
 
+### Deploy bản web lên Streamlit Cloud (miễn phí)
+
+1. Vào https://share.streamlit.io → **Deploy an app** → chọn repo **`TGMT`**, branch **`main`**, main file **`APP.py`**
+2. **Python version: `3.10`** · **requirements file: `requirements.txt`** (Cloud tự cài PyTorch CPU — không cần GPU)
+3. Chờ ~2–3 phút build. App chạy ở link `https://...streamlit.app` → dán link đó vào 2 chỗ `_________________` trong README này
+
+> Code đã được vá để chạy an toàn trên Cloud (ghi file ra thư mục tạm, không lỗi với đĩa read-only của Streamlit Cloud).
+
 ---
 
 # 🖊️ CÁCH DÙNG APP (chung cho cả 3 cách)
