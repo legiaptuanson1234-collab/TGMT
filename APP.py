@@ -113,19 +113,19 @@ def _extract_points(objects, drawing_mode):
 
 
 def _with_grid(img_pil):
-    """Vẽ lưới + mốc 100px để căn toạ độ (toạ độ đếm = toạ độ ảnh gốc
-    1280x720, mốc lưới giúp ước lượng khi nhập thủ công)."""
+    """Vẽ lưới + mốc 100px để căn toạ độ (hệ toạ độ ảnh gốc 1280x720,
+    mốc lưới giúp ước lượng khi nhập thủ công). Trả về ảnh RGB sạch."""
     img = img_pil.convert("RGB")
     w, h = img.size
-    d = ImageDraw.Draw(img, "RGBA")
+    d = ImageDraw.Draw(img)
     for x in range(0, w + 1, 100):
-        d.line([(x, 0), (x, h)], fill=(255, 80, 0, 120), width=1)
+        d.line([(x, 0), (x, h)], fill=(255, 120, 40), width=1)
     for y in range(0, h + 1, 100):
-        d.line([(0, y), (w, y)], fill=(255, 80, 0, 120), width=1)
+        d.line([(0, y), (w, y)], fill=(255, 120, 40), width=1)
     for x in range(0, w + 1, 200):
         for y in range(0, h + 1, 200):
-            d.text((x + 3, y + 3), f"{x},{y}", fill=(255, 255, 0))
-    return img
+            d.text((x + 3, y + 3), "%d,%d" % (x, y), fill=(255, 255, 0))
+    return img.convert("RGB")
 
 
 # --- 1. CẤU HÌNH TRANG WEB ---
@@ -184,8 +184,12 @@ if uploaded_file is not None:
         drawing_mode = "line" if mode == "Đếm Vạch (Line)" else "polygon"
 
         # (a) ẢNH NỀN THAM KHẢO (KHÔNG BỊ TRẮNG KHI CHUỘT CHẠY) - có lưới căn toạ độ
+        # (Streamlit 1.24: dung use_column_width, KHONG co tham so use_container_width)
         st.markdown("**📷 Ảnh nền (tham khảo để căn vẽ):**")
-        st.image(_with_grid(image_pil), use_container_width=True)
+        try:
+            st.image(_with_grid(image_pil))
+        except Exception:
+            st.image(image_pil)
         st.caption("Toạ độ hệ 1280×720 (góc trên-trái = 0,0). Lưới mỗi 100px, mốc mỗi 200px.")
 
         # (b) Canvas để vẽ nhanh (chuột) - nếu nền trắng vẫn dùng được (c)
