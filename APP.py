@@ -112,24 +112,49 @@ def _bake_grid(rgb_img_w1280x720):
 
 def _extract_points(objects, drawing_mode, sx=1.0, sy=1.0):
     """Lấy toạ độ AN TOÀN từ canvas rồi qui về hệ 1280x720 (hệ toạ độ đếm).
-    sx,sy: hệ số đổi toạ độ canvas HIỂN THỊ (CX x CY) sang toạ độ đếm (1280x720).
-    - Line: obj có x1,y1,x2,y2 (tương đối so với left/top).
-    - Polygon/Free: obj có 'path' (list điểm [x,y,rx,ry,...] hoặc [x,y])."""
+    sx,sy: hệ số đổi toạ độ canvas HIỂN THỊ (960x540) sang toạ độ đếm (1280x720).
+
+    Canvas 0.13 trả dữ liệu theo object (Fabric.js):
+    - line    : 'x1','y1','x2','y2' (TƯƠNG ĐỐI so với left/top)
+    - rect    : 'left','top','width','height' (canvas)
+    - polygon : 'points' = danh sách đỉnh {x,y} (TUYỆT ĐỐI, toạ độ canvas)
+    - freedraw: 'path' (list phẳng x0,y0,x1,y1,... TƯƠNG ĐỐI left/top)
+    Trả về danh sách (x,y) đã qui về 1280x720; [] nếu rỗng."""
+    def to_count(pts):
+        return [(int(x * sx), int(y * sy)) for (x, y) in pts]
+
     if drawing_mode == "line":
         for obj in objects:
             if "x1" in obj and "x2" in obj:
                 left, top = int(obj.get("left", 0)), int(obj.get("top", 0))
-                p1 = (int((left + int(obj["x1"])) * sx), int((top + int(obj["y1"])) * sy))
-                p2 = (int((left + int(obj["x2"])) * sx), int((top + int(obj["y2"])) * sy))
-                return [p1, p2]
+                return to_count([(left + int(obj["x1"]), top + int(obj["y1"])),
+                                 (left + int(obj["x2"]), top + int(obj["y2"]))])
         return []
+
     for obj in objects:
-        pts = []
-        for p in (obj.get("path") or []):
-            if isinstance(p, (list, tuple)) and len(p) >= 2:
-                pts.append((int(p[0] * sx), int(p[1] * sy)))
-        if pts:
-            return pts
+        # RECT (1 lần kéo -> 4 góc)
+        if all(k in obj for k in ("left", "top", "width", "height")):
+            L, T = int(obj["left"]), int(obj["top"])
+            Wd, Ht = int(obj["width"]), int(obj["height"])
+            return to_count([(L, T), (L + Wd, T), (L + Wd, T + Ht), (L, T + Ht)])
+        # POLYGON -> 'points' (đỉnh tuyệt đối toạ độ canvas)
+        ppts = []
+        for p in (obj.get("points") or []):
+            if isinstance(p, dict):
+                ppts.append((p.get("x", 0), p.get("y", 0)))
+            elif isinstance(p, (list, tuple)) and len(p) >= 2:
+                ppts.append((p[0], p[1]))
+        if ppts:
+            return to_count(ppts)
+        # FREEDRAW -> 'path' (list phẳng, tương đối left/top)
+        path = obj.get("path") or []
+        if path:
+            L, T = int(obj.get("left", 0)), int(obj.get("top", 0))
+            fp = []
+            for i in range(0, len(path) - 1, 2):
+                fp.append((L + path[i], T + path[i + 1]))
+            if fp:
+                return to_count(fp)
     return []
 
 
