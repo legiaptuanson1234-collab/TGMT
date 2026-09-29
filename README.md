@@ -144,10 +144,10 @@ python desktop/app_desktop.py
 
 ```bash
 streamlit run APP.py
-# Mở trình duyệt: http://localhost:8501
+# Mở trình duyệt: (https://dxprwoy9sokyzf2p3espvh.streamlit.app/)
 ```
 
-**Bản demo online:** `https://dxprwoy9sokyzf2p3espvh.streamlit.app` *(link Streamlit Cloud sẽ được cập nhật sau)*
+**Bản demo online:** `https://dxprwoy9sokyzf2p3espvh.streamlit.app/`
 
 ### Deploy bản web lên Streamlit Cloud (miễn phí)
 
