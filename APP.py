@@ -128,59 +128,48 @@ def _img(result):
     return arr
 
 
-def _diff_masks(result, ref_rgb):
-    """So 'ảnh canvas đã vẽ' với 'ảnh nền' (ref) -> chỉ lấy PIXEL BẠN VẼ.
-    Trả về (magenta_mask, fill_mask) DXxDY (uint8 0/255).
-    magenta_mask = nét TÍM (VẠCH) · fill_mask = các pixel khác bạn vẽ (VÙNG)."""
-    z = np.zeros((DY, DX), np.uint8)
-    canvas = _img(result)
-    if canvas is None:
-        return z, z.copy()
-    ref = np.array(ref_rgb.resize((DX, DY)).convert("RGB")).astype(np.int16)
-    c = canvas[:, :, :3].astype(np.int16)
-    changed = (np.abs(c - ref).max(axis=2) > 40)
-    R = canvas[:, :, 0].astype(np.int16)
-    G = canvas[:, :, 1].astype(np.int16)
-    B = canvas[:, :, 2].astype(np.int16)
-    is_mag = (R > 150) & (B > 150) & (G < 120)
-    magenta_mask = (changed & is_mag).astype(np.uint8) * 255
-    fill_mask = (changed & ~is_mag).astype(np.uint8) * 255
-    return magenta_mask, fill_mask
+def _shapes_from_json(result, W, H):
+    """DOC TRỰC TIẾP dữ liệu canvas (json_data.objects) -> (lines, polys)
+    tại toạ độ 1280x720 (hệ đếm). Đây là nguồn ĐÚNG CHUẨN (canvas trả toạ
+    độ chính xác từng nét/từng góc) - KHÔNG dùng "so màu pixel" (cách cũ bị
+    lệch/tàng hình do rescale ảnh nền sai khác giữa thư viện canvas & OpenCV).
 
-
-def _lines_from_mask(mag_mask, W, H):
-    """mask nét TÍM (DXxDY) -> [(A,B), ...] toạ độ 1280x720 (N vạch)."""
-    out = []
-    cnts, _ = cv2.findContours(mag_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_NONE)
+    - Vạch (line)   : obj có 'x1','y1','x2','y2' (tương đối so với left/top).
+    - Vùng (polygon): obj có 'points' (TUYỆT ĐỐI, toạ độ canvas) - KHÔNG cộng
+                      left/top (cộng thì bị LỆCH - đúng bug 'ROI tàng hình').
+    Mỗi nét = 1 vạch, mỗi đa giác = 1 vùng (vẽ N hình được)."""
     sx, sy = W / float(DX), H / float(DY)
-    for c in cnts:
-        if c.size < 12:
-            continue
-        pts = c[:, 0, :].astype(np.float64)
-        mean = pts.mean(axis=0)
-        _, evecs = np.linalg.eigh(np.cov(pts.T))
-        v = evecs[:, -1]
-        t = (pts - mean) @ v
-        i1, i2 = int(np.argmin(t)), int(np.argmax(t))
-        p1 = (int(round(pts[i1][0] * sx)), int(round(pts[i1][1] * sy)))
-        p2 = (int(round(pts[i2][0] * sx)), int(round(pts[i2][1] * sy)))
-        if abs(p1[0] - p2[0]) + abs(p1[1] - p2[1]) >= 20:
-            out.append((p1, p2))
-    return out
-
-
-def _roi_mask_from(fill_mask, W, H, min_area=300):
-    """mask pixel VẼ (vùng, DXxDY) -> mask bool HxW (1280x720) NHIỀU vùng
-    (điền đầy bên trong, loại blob nhỏ do lưới/nhiễu)."""
-    m = cv2.morphologyEx(fill_mask, cv2.MORPH_CLOSE, np.ones((9, 9), np.uint8))
-    m = cv2.dilate(m, np.ones((3, 3), np.uint8))
-    cnts, _ = cv2.findContours(m, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-    filled = np.zeros_like(m)
-    for c in cnts:
-        if cv2.contourArea(c) >= min_area:
-            cv2.drawContours(filled, [c], -1, 255, -1)
-    filled = cv2.resize(filled, (W, H), interpolation=cv2.INTER_NEAREST)
-    return filled > 0
+    lines, polys = [], []
+    jd = getattr(result, "json_data", None)
+    if not jd:
+        return lines, polys
+    objs = jd.get("objects", []) or []
+    for o in objs:
+        try:
+            if "points" in o:                       # VÙNG (đa giác) - điểm TUYỆT ĐỐI
+                pts = []
+                raw = o.get("points", [])
+                if raw and isinstance(raw, (list, tuple)) and len(raw) >= 2 and not isinstance(raw[0], (list, tuple, dict)):
+                    # flat: [x0,y0,x1,y1,...]
+                    for i in range(0, len(raw) - 1, 2):
+                        pts.append((int(raw[i] * sx), int(raw[i + 1] * sy)))
+                else:
+                    for p in raw:
+                        if isinstance(p, dict):
+                            pts.append((int(p.get("x", 0) * sx), int(p.get("y", 0) * sy)))
+                        elif isinstance(p, (list, tuple)) and len(p) >= 2:
+                            pts.append((int(p[0] * sx), int(p[1] * sy)))
+                if len(pts) >= 3:
+                    polys.append(pts)
+            elif "x1" in o and "x2" in o:           # VẠCH (line) - điểm TƯƠNG ĐỐI
+                L, T = int(o.get("left", 0)), int(o.get("top", 0))
+                a = (int((L + int(o["x1"])) * sx), int((T + int(o["y1"])) * sy))
+                b = (int((L + int(o["x2"])) * sx), int((T + int(o["y2"])) * sy))
+                if abs(a[0] - b[0]) + abs(a[1] - b[1]) >= 20:
+                    lines.append((a, b))
+        except Exception:
+            pass
+    return lines, polys
 
 
 def _bg_uri(bg_pil):
@@ -188,6 +177,56 @@ def _bg_uri(bg_pil):
     buf = io.BytesIO()
     bg_pil.save(buf, format="PNG")
     return "data:image/png;base64," + base64.b64encode(buf.getvalue()).decode("ascii")
+
+
+def _read_shapes_color(result, W, H):
+    """DOC MÀU NÉT VẼ TRỰC TIẾP từ ảnh canvas (RGBA) - KHÔNG so với ảnh nền
+    (cách cũ so nền bị LỆCH/PHÌNH khi render khác rescale -> 'tàng hình').
+
+    - Nét TÍM  #FF00FF = VẠCH (Line)        -> đọc từng nét, lấy 2 đầu (PCA)
+    - Nét XANH LÁ #00FF00 = VIỀN VÙNG (ROI)  -> contour ngoài -> điền đầy bên trong
+
+    Hai màu này không có trong video thật / lưới cam / mốc vàng -> tách sạch,
+    vẽ ở đâu đếm đúng đó. Vạch & vùng đọc CÙNG LÚC (đổi chế độ không mất hình).
+    Trả về (lines, roi_mask) tại toạ độ 1280x720 (hệ đếm)."""
+    sx, sy = W / float(DX), H / float(DY)
+    canvas = _img(result)                      # (DY, DX, 4) RGBA hoặc None
+    roi_mask = np.zeros((H, W), bool)
+    lines = []
+    if canvas is None:
+        return lines, roi_mask
+    R = canvas[:, :, 0].astype(np.int16)
+    G = canvas[:, :, 1].astype(np.int16)
+    B = canvas[:, :, 2].astype(np.int16)
+
+    # --- VẠCH: nét TÍM (#FF00FF) ---
+    mag = ((R > 150) & (B > 150) & (G < 100)).astype(np.uint8) * 255
+    mag = cv2.dilate(mag, np.ones((3, 3), np.uint8))
+    cnts, _ = cv2.findContours(mag, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_NONE)
+    for c in cnts:
+        if c.size < 12:
+            continue
+        pts = c[:, 0, :].astype(np.float64)
+        mean = pts.mean(axis=0)
+        _, ev = np.linalg.eigh(np.cov(pts.T))
+        v = ev[:, -1]
+        t = (pts - mean) @ v
+        i1, i2 = int(np.argmin(t)), int(np.argmax(t))
+        p1 = (int(pts[i1][0] * sx), int(pts[i1][1] * sy))
+        p2 = (int(pts[i2][0] * sx), int(pts[i2][1] * sy))
+        if abs(p1[0] - p2[0]) + abs(p1[1] - p2[1]) >= 20:
+            lines.append((p1, p2))
+
+    # --- VÙNG: nét XANH LÁ (#00FF00 = viền đa giác) -> điền đầy bên trong ---
+    grn = ((G > 170) & (R < 90) & (B < 90)).astype(np.uint8) * 255
+    grn = cv2.morphologyEx(grn, cv2.MORPH_CLOSE, np.ones((9, 9), np.uint8))
+    gcnts, _ = cv2.findContours(grn, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    gmask = np.zeros_like(grn)
+    for c in gcnts:
+        if cv2.contourArea(c) >= 300:          # loại blob nhỏ (nhiễu)
+            cv2.drawContours(gmask, [c], -1, 255, -1)   # điền bên trong
+    roi_mask = cv2.resize(gmask, (W, H), interpolation=cv2.INTER_NEAREST) > 0
+    return lines, roi_mask
 
 
 # --- 1. CẤU HÌNH ---
@@ -276,11 +315,8 @@ if uploaded_file is not None:
                    "**góc giữa** để bỏ góc). Đổi chế độ Line↔ROI **không mất hình đã vẽ**. "
                    "Sửa: Undo ↶ / thùng rác trên canvas, hoặc 'Xoá hết & Vẽ lại'.")
 
-        # Đọc PIXEL bạn VẼ (không đọc toạ độ JSON -> KHÔNG LỆCH)
-        ref_rgb = bg_pil_grid
-        mag_m, fill_m = _diff_masks(canvas_result, ref_rgb)
-        lines = _lines_from_mask(mag_m, W, H)
-        roi_mask = _roi_mask_from(fill_m, W, H)
+        # Đọc MÀU NÉT VẼ (tím=vạch, xanh-lá=vùng) - KHÔNG so nền -> không phình/lech
+        lines, roi_mask = _read_shapes_color(canvas_result, W, H)
         _nreg, _ = cv2.connectedComponents(roi_mask.astype(np.uint8))
         n_regions = _nreg - 1
 

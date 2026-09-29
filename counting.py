@@ -24,7 +24,7 @@ class BaseCounter:
         self.vehicle_counts = {0: 0, 1: 0, 2: 0, 3: 0, 4: 0}
         self.class_names = {0: 'O To', 1: 'Xe May', 2: 'Xe Tai', 3: 'Xe Bus', 4: 'Xe Ba Gac'}
         # ==========================================
-        # DƯNG ĐƯỜNG DẪN TƯƠNG ĐỐI (DÙNG ĐƯỢC TRÊN WEB)
+        # DÙNG ĐƯỜNG DẪN TƯƠNG ĐỐI (DÙNG ĐƯỢC TRÊN WEB)
         # ==========================================
         self.save_dir = _safe_dir('Bao_Cao')
         time_str = datetime.now().strftime('%Y%m%d_%H%M%S')
@@ -111,24 +111,18 @@ class LineCounter(BaseCounter):
         cv2.line(frame, self.line_A, self.line_B, color, 5 if is_flash else 2)
 
 # ===============================================
-# 3. NHIỀU HÌNH CÙNG LÚC (nhiều VẠCH + nhiều VÙNG)
-#    - lines:    danh sách (A,B) toạ độ 1280x720
-#    - roi_mask: mảng bool (H,W) = vùng nội bộ (hoặc None nếu không có ROI)
-#    Đếm 1 xe MỘT LẦN khi: (vượt một vạch) HOẶC (vào vùng ROI).
+# 3. NHIỀU HÌNH CÙNG LÚC (nhiều VẠCH + nhiều VÙNG đa giác)
+#    - lines:        danh sách (A, B) toạ độ 1280x720
+#    - roi_polygons: danh sách vùng, mỗi vùng = list (x, y) toạ độ 1280x720
+#    Đếm 1 xe MỘT LẦN khi: (vượt 1 vạch) HOẶC (nằm trong 1 vùng).
 # ===============================================
 class MultiCounter(BaseCounter):
-    def __init__(self, lines=None, roi_mask=None):
+    def __init__(self, lines=None, roi_polygons=None, roi_mask=None):
         super().__init__()
-        self.lines = lines or []                 # [(A,B), ...]
-        self.roi_mask = roi_mask                # bool (H,W) hoặc None
+        self.lines = lines or []
+        self.roi_polygons = [np.array(p, dtype=np.int32) for p in (roi_polygons or [])]
+        self.roi_mask = roi_mask
         self._track_hist = {}
-        # đường biên của ROI để vẽ
-        if self.roi_mask is not None:
-            m = (self.roi_mask.astype(np.uint8)) * 255
-            cnts, _ = cv2.findContours(m, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-            self.roi_contours = cnts
-        else:
-            self.roi_contours = []
 
     def _crossed_any_line(self, prev, cur):
         for A, B in self.lines:
@@ -140,12 +134,18 @@ class MultiCounter(BaseCounter):
     def _ccw(self, A, B, C):
         return (C[1]-A[1]) * (B[0]-A[0]) > (B[1]-A[1]) * (C[0]-A[0])
 
+    def has_roi(self):
+        return bool(self.roi_polygons) or (self.roi_mask is not None)
+
     def is_inside_roi(self, cx, cy):
-        if self.roi_mask is None:
-            return False
-        cx = int(np.clip(cx, 0, self.roi_mask.shape[1]-1))
-        cy = int(np.clip(cy, 0, self.roi_mask.shape[0]-1))
-        return bool(self.roi_mask[cy, cx])
+        for poly in self.roi_polygons:
+            if cv2.pointPolygonTest(poly, (cx, cy), False) >= 0:
+                return True
+        if self.roi_mask is not None:
+            cx = int(np.clip(cx, 0, self.roi_mask.shape[1]-1))
+            cy = int(np.clip(cy, 0, self.roi_mask.shape[0]-1))
+            return bool(self.roi_mask[cy, cx])
+        return False
 
     def check_and_count(self, cx, cy, track_id, cls_id):
         if track_id in self.counted_ids:
@@ -156,9 +156,8 @@ class MultiCounter(BaseCounter):
                 if self._crossed_any_line(self._track_hist[track_id], (cx, cy)):
                     do_count = True
             self._track_hist[track_id] = (cx, cy)
-        if self.roi_mask is not None:
-            if self.is_inside_roi(cx, cy):
-                do_count = True
+        if self.has_roi() and self.is_inside_roi(cx, cy):
+            do_count = True
         if do_count:
             self.counted_ids.add(track_id)
             self.total_vehicles += 1
@@ -168,25 +167,35 @@ class MultiCounter(BaseCounter):
         return False
 
     def is_active(self, cx, cy):
-        # cảnh báo ùn tắc chỉ tính xe nằm trong vùng ROI (nếu có);
-        # nếu chỉ vẽ vạch (không ROI) thì mọi xe đều tính
-        if self.roi_mask is not None:
+        # cảnh báo ùn tắc chỉ tính xe nằm TRONG VÙNG (nếu có vẽ vùng);
+        # chỉ vẽ vạch (không có vùng) thì mọi xe đều tính
+        if self.has_roi():
             return self.is_inside_roi(cx, cy)
         return True
 
     @property
     def congestion_limit(self):
-        return 10 if (self.roi_mask is not None) else 28
+        return 10 if self.has_roi() else 28
 
     def draw_shape(self, frame, is_flash):
-        # VẼ TẤT CẢ VẠCH
+        # TẤT CẢ VẠCH
         for A, B in self.lines:
             color = (0, 255, 255) if is_flash else (255, 0, 255)
-            cv2.line(frame, A, B, color, 5 if is_flash else 2)
-        # VẼ TẤT CẢ VÙNG (đường biên)
-        if self.roi_contours:
+            cv2.line(frame, A, B, color, 4 if is_flash else 2)
+        # TẤT CẢ VÙNG (FILL ĐỎ RÕ + VIỀN) - không "tàng hình" nữa
+        for poly in self.roi_polygons:
+            overlay = frame.copy()
+            cv2.fillPoly(overlay, [poly], (40, 80, 200))
+            cv2.addWeighted(overlay, 0.30, frame, 0.70, 0, frame)
             color = (0, 255, 255) if is_flash else (0, 0, 255)
-            cv2.drawContours(frame, self.roi_contours, -1, color, 5 if is_flash else 2)
+            cv2.polylines(frame, [poly], True, color, 4 if is_flash else 2)
+        if self.roi_mask is not None:
+            m = (self.roi_mask.astype(np.uint8)) * 255
+            cnts, _ = cv2.findContours(m, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+            overlay = frame.copy()
+            cv2.fillPoly(overlay, cnts, (40, 80, 200))
+            cv2.addWeighted(overlay, 0.30, frame, 0.70, 0, frame)
+            cv2.drawContours(frame, cnts, -1, (0, 255, 255), 2)
 
 # ===============================================
 # 4. TRẠM TRUNG CHUYỂN (DÀNH RIÊNG CHO WEB)
