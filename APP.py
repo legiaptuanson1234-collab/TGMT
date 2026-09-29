@@ -5,7 +5,11 @@ from PIL import Image, ImageDraw
 import os
 import tempfile
 
-# --- NHẬP CÁC MODULE AI CỦA BẠN ---
+# --- NHẬP CÁC MODULE AI CỦA BẠN (kèm "tự chữa" build cũ) ---
+import importlib, sys
+for _m in ("counting", "tracking"):
+    sys.modules.pop(_m, None)
+import counting, tracking
 from tracking import run_ai_fast, run_ai_quality, run_ai_turbo, DISPLAY_W, DISPLAY_H
 from counting import MultiCounter
 
@@ -15,11 +19,10 @@ try:
 except Exception:
     _HAS_CANVAS = False
 
-BUILD_TAG = "TGMT-v6 · NHIỀU hình (vạch + vùng đa giác) · đọc PIXEL canvas (không lệch) · hiện tất cả hình"
+BUILD_TAG = "TGMT-v7 · 1 hình + Line/ROI (giữ hình khi đổi) · đọc pixel (không lệch) · hết crash"
 
-# Kích thước chuẩn: toạ độ đếm = 1280x720, canvas hiển thị 960x540 (fit màn)
-W, H = DISPLAY_W, DISPLAY_H
-DX, DY = 960, 540
+W, H = DISPLAY_W, DISPLAY_H       # 1280x720 (hệ toạ độ đếm)
+DX, DY = 960, 540                # canvas hiển thị (fit màn, thấy đủ đường)
 
 
 def _workfile(name):
@@ -39,8 +42,6 @@ def _frame_stats(frame):
 
 
 def _find_content_frame(video_path, target_idx=50, max_scan=400):
-    """Lấy khung NỀN (khung có nội dung thật) từ video. Đọc tuần tự (seek thất
-    bại trên Cloud), fallback ffmpeg nếu OpenCV không mở được."""
     cap = cv2.VideoCapture(video_path)
     if cap.isOpened():
         total = int(cap.get(cv2.CAP_PROP_FRAME_COUNT) or 0)
@@ -90,7 +91,6 @@ def _find_content_frame(video_path, target_idx=50, max_scan=400):
 
 
 def _bake_grid(rgb_img):
-    """Vẽ lưới 100px + mốc toạ độ 200px LÊN ảnh nền (căn toạ độ khi vẽ)."""
     img = rgb_img.convert("RGB")
     w, h = img.size
     d = ImageDraw.Draw(img)
@@ -105,56 +105,33 @@ def _bake_grid(rgb_img):
     return img
 
 
-def _canvas(bg_pil, drawing_mode, key):
-    """Mở 1 canvas (line / polygon) có ảnh nền, trả result (kèm image_data)
-    hoặc None nếu lỗi. - Vạch : nét MAGENTA (tím hồng), không fill
-    - Vùng : viền XANH + fill XANH DƯƠNG (nửa trong suốt)."""
-    if not _HAS_CANVAS:
-        return None
-    try:
-        import io, base64
-        buf = io.BytesIO()
-        bg_pil.save(buf, format="PNG")
-        uri = "data:image/png;base64," + base64.b64encode(buf.getvalue()).decode("ascii")
-        if drawing_mode == "line":
-            return st_canvas(fill_color="rgba(0,0,0,0)",
-                             stroke_width=4, stroke_color="#FF00FF",
-                             background_image=uri, update_streamlit=True,
-                             height=DY, width=DX, drawing_mode="line",
-                             return_image_data=True, key=key)
-        return st_canvas(fill_color="rgba(0,120,255,0.5)",
-                         stroke_width=4, stroke_color="#00FF00",
-                         background_image=uri, update_streamlit=True,
-                         height=DY, width=DX, drawing_mode="polygon",
-                         return_image_data=True, key=key)
-    except Exception as e:
-        st.warning("Canvas không khả dụng: %s" % e)
-        return None
-
-
 def _img(result):
-    """Lấy ảnh canvas (RGBA) về kích thước DXxDY. None nếu rỗng/lỗi."""
+    """Lấy ảnh canvas (RGBA) về DXxDY. None nếu CHƯA VẼ GÌ (image_data=None)
+    hay lỗi — để app không crash khi load lại / chưa vẽ (sai IndexError cũ)."""
     if result is None:
         return None
+    data = getattr(result, "image_data", None)
+    if data is None:
+        return None
     try:
-        arr = np.asarray(result.image_data)
+        arr = np.asarray(data)
     except Exception:
         return None
-    if arr is None or arr.size == 0:
+    if arr is None or arr.size == 0 or arr.ndim < 2:   # None/0-dim -> an toàn
         return None
     if arr.ndim == 4:
         arr = arr[:, :, :, 0]
+    if arr.ndim < 3:
+        return None
     if arr.shape[0] != DY or arr.shape[1] != DX:
         arr = cv2.resize(arr, (DX, DY))
     return arr
 
 
 def _diff_masks(result, ref_rgb):
-    """So 'ảnh canvas đã vẽ' với 'ảnh nền gốc' (ref) -> chỉ giữ PIXEL BẠN VẼ.
-    Trả về (magenta_mask, fill_mask) ở kích thước DXxDY (uint8 0/255).
-    magenta_mask = nét tím (VẠCH) · fill_mask = các pixel còn lại bạn vẽ (VÙNG).
-    Cách này BỎ qua màu đường/nền (chỉ pixel 'thay đổi' so với ref) nên không
-    phụ thuộc màu cảnh, KHÔNG lệch vị trí."""
+    """So 'ảnh canvas đã vẽ' với 'ảnh nền' (ref) -> chỉ lấy PIXEL BẠN VẼ.
+    Trả về (magenta_mask, fill_mask) DXxDY (uint8 0/255).
+    magenta_mask = nét TÍM (VẠCH) · fill_mask = các pixel khác bạn vẽ (VÙNG)."""
     z = np.zeros((DY, DX), np.uint8)
     canvas = _img(result)
     if canvas is None:
@@ -172,9 +149,7 @@ def _diff_masks(result, ref_rgb):
 
 
 def _lines_from_mask(mag_mask, W, H):
-    """Từ mask nét MAGENTA (DXxDY) -> danh sách (A, B) toạ độ 1280x720.
-    Mỗi nét vẽ = 1 vạch, vẽ được N vạch. Dùng PCA (numpy) thay cv2.fitLine
-    (fitLine lỗi signature trên OpenCV 4.11)."""
+    """mask nét TÍM (DXxDY) -> [(A,B), ...] toạ độ 1280x720 (N vạch)."""
     out = []
     cnts, _ = cv2.findContours(mag_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_NONE)
     sx, sy = W / float(DX), H / float(DY)
@@ -184,7 +159,7 @@ def _lines_from_mask(mag_mask, W, H):
         pts = c[:, 0, :].astype(np.float64)
         mean = pts.mean(axis=0)
         _, evecs = np.linalg.eigh(np.cov(pts.T))
-        v = evecs[:, -1]                      # phương chính (dọc nét)
+        v = evecs[:, -1]
         t = (pts - mean) @ v
         i1, i2 = int(np.argmin(t)), int(np.argmax(t))
         p1 = (int(round(pts[i1][0] * sx)), int(round(pts[i1][1] * sy)))
@@ -195,18 +170,24 @@ def _lines_from_mask(mag_mask, W, H):
 
 
 def _roi_mask_from(fill_mask, W, H, min_area=300):
-    """Từ mask pixel VẼ (vùng, DXxDY) -> mask bool HxW (1280x720) của NHIỀU
-    vùng. Mỗi vùng được ĐIỀN ĐẦY bên trong (trường hợp đa giác chưa đóng);
-    blob < min_area (nhiễu, lưới) bị loại."""
+    """mask pixel VẼ (vùng, DXxDY) -> mask bool HxW (1280x720) NHIỀU vùng
+    (điền đầy bên trong, loại blob nhỏ do lưới/nhiễu)."""
     m = cv2.morphologyEx(fill_mask, cv2.MORPH_CLOSE, np.ones((9, 9), np.uint8))
     m = cv2.dilate(m, np.ones((3, 3), np.uint8))
     cnts, _ = cv2.findContours(m, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
     filled = np.zeros_like(m)
     for c in cnts:
         if cv2.contourArea(c) >= min_area:
-            cv2.drawContours(filled, [c], -1, 255, -1)   # điền bên trong
+            cv2.drawContours(filled, [c], -1, 255, -1)
     filled = cv2.resize(filled, (W, H), interpolation=cv2.INTER_NEAREST)
     return filled > 0
+
+
+def _bg_uri(bg_pil):
+    import io, base64
+    buf = io.BytesIO()
+    bg_pil.save(buf, format="PNG")
+    return "data:image/png;base64," + base64.b64encode(buf.getvalue()).decode("ascii")
 
 
 # --- 1. CẤU HÌNH ---
@@ -217,20 +198,21 @@ st.caption("🔖 " + BUILD_TAG)
 
 
 def _btn_full_width(label):
-    """Nút chạy ngang (Streamlit cũ lẫn mới)."""
     try:
         return st.button(label, type="primary", width="stretch")
     except TypeError:
         return st.button(label, type="primary", use_container_width=True)
 
 
-# --- 2. BẢNG ĐIỀU KHIỂN ---
+# --- 2. BẢNG ĐIỀU KHIỂN (GIỮ PHONG CÁCH CŨ) ---
 with st.sidebar:
     st.header("⚙️ BẢNG ĐIỀU KHIỂN")
     st.markdown("---")
-    uploaded_file = st.file_uploader("Tải Video Lên", type=['mp4', 'avi', 'mov'])
+    st.markdown("**1. Tải Video Lên**")
+    uploaded_file = st.file_uploader("video", type=['mp4', 'avi', 'mov'])
+    mode = st.radio("2. Chế Độ Phân Tích", ["Đếm Vạch (Line)", "Đếm Vùng (ROI)"])
     perf_mode = st.radio(
-        "Tốc Độ",
+        "3. Tốc Độ",
         ["Siêu nhanh (CPU demo)", "Nhanh (CPU)", "Chất lượng (GPU)"],
         help="Cloud chạy CPU. 'Siêu nhanh': YOLO 480x270 + bỏ frame (demo). "
              "'Nhanh': 640x360. 'Chất lượng': 1280x720 (có GPU).")
@@ -239,12 +221,10 @@ with st.sidebar:
 # --- 3. XỬ LÝ VIDEO: thêm video là TỰ HIỆN KHUNG ĐƯỜNG để vẽ ---
 if uploaded_file is not None:
     video_path = _workfile("video_tam.mp4")
-
     if "last_filename" not in st.session_state or st.session_state.last_filename != uploaded_file.name:
         st.session_state.last_filename = uploaded_file.name
         with open(video_path, "wb") as f:
             f.write(uploaded_file.getvalue())
-
         frame, bg_info = _find_content_frame(video_path)
         if frame is not None:
             frame = cv2.resize(frame, (W, H))
@@ -256,46 +236,58 @@ if uploaded_file is not None:
             st.info("📹 Xem video gốc bằng trình duyệt:")
             st.video(uploaded_file)
 
-    # --- 4. VẼ NHIỀU HÌNH (vạch + vùng đa giác) ---
+    # --- 4. 1 HÌNH TO ĐỂ VẼ (giữ phong cách cũ) ---
     if "bg_image" in st.session_state and st.session_state.bg_image is not None:
-        # Ảnh nền CÓ LƯỚI (để căn) - cũng là 'baseline' để so pixel (canvas dùng
-        # đúng ảnh này làm nền, nên so với nó mới chỉ lấy ra VIẾC BẠN VẼ).
         bg_pil_grid = _bake_grid(st.session_state.bg_image)
-        ref_rgb = bg_pil_grid
 
         _ck = st.session_state.get("_canvas_seq", 0)
         if st.button("🗑️ Xoá hết & Vẽ lại", key="reset_draw"):
             st.session_state["_canvas_seq"] = _ck + 1
             st.rerun()
 
-        st.subheader("🖊️ Vạch & Vùng (vẽ được NHIỀU hình)")
-        st.caption("💡 **Vạch** = kéo nét tím · **Vùng** = click các góc (click **góc đầu** để khép vùng, "
-                   "click **góc giữa** để bỏ góc). Vẽ xong: Undo ↶ / thùng rác để sửa, hoặc 'Xoá hết & Vẽ lại'.")
+        st.subheader("🖊️ Vẽ vạch / vùng trên ảnh (sau đó bấm KHỞI ĐỘNG AI)")
 
-        col1, col2 = st.columns(2)
-        with col1:
-            st.markdown("**① Vạch (Line)** — kéo 1 nét tím (vẽ nhiều vạch được)")
-            res_line = _canvas(bg_pil_grid, "line", "line_c_%d" % _ck)
-        with col2:
-            st.markdown("**② Vùng (ROI)** — click các góc, fill xanh (vẽ nhiều vùng được)")
-            res_roi = _canvas(bg_pil_grid, "polygon", "roi_c_%d" % _ck)
+        # 1 CANVAS DUY NHẤT. Key CHỈ đổi khi "Xoá hết & Vẽ lại" (reset),
+        # KHÔNG đổi khi chọn Line/ROI -> ĐỔI CHẾ ĐỘ MÀ HÌNH VẼ CŨ VẪN GIỮ.
+        drawing_mode = "line" if mode == "Đếm Vạch (Line)" else "polygon"
+        if _HAS_CANVAS:
+            if drawing_mode == "line":
+                canvas_result = st_canvas(
+                    fill_color="rgba(0,0,0,0)",
+                    stroke_width=4, stroke_color="#FF00FF",
+                    background_image=_bg_uri(bg_pil_grid),
+                    update_streamlit=True, height=DY, width=DX,
+                    drawing_mode="line",
+                    return_image_data=True, key="draw_canvas_%d" % _ck)
+            else:
+                canvas_result = st_canvas(
+                    fill_color="rgba(0,120,255,0.45)",
+                    stroke_width=4, stroke_color="#00FF00",
+                    background_image=_bg_uri(bg_pil_grid),
+                    update_streamlit=True, height=DY, width=DX,
+                    drawing_mode="polygon",
+                    return_image_data=True, key="draw_canvas_%d" % _ck)
+        else:
+            st.image(bg_pil_grid)
+            canvas_result = None
+            st.caption("(Canvas không khả dụng trên máy chủ — chạy vẫn dùng được vạch/vùng bạn đã vẽ trước)")
 
-        # Đọc PIXEL bạn VẼ (không đọc toạ độ JSON -> không lệch)
-        mag_m, fill_m = _diff_masks(res_line, ref_rgb)
-        mag_m2, fill_m2 = _diff_masks(res_roi, ref_rgb)
-        mag_all = mag_m | mag_m2
-        fill_all = fill_m | fill_m2
+        st.caption("💡 **Vạch** = kéo 1 nét · **Vùng** = click các góc (click **góc đầu** để khép, "
+                   "**góc giữa** để bỏ góc). Đổi chế độ Line↔ROI **không mất hình đã vẽ**. "
+                   "Sửa: Undo ↶ / thùng rác trên canvas, hoặc 'Xoá hết & Vẽ lại'.")
 
-        lines = _lines_from_mask(mag_all, W, H)
-        roi_mask = _roi_mask_from(fill_all, W, H)
-
+        # Đọc PIXEL bạn VẼ (không đọc toạ độ JSON -> KHÔNG LỆCH)
+        ref_rgb = bg_pil_grid
+        mag_m, fill_m = _diff_masks(canvas_result, ref_rgb)
+        lines = _lines_from_mask(mag_m, W, H)
+        roi_mask = _roi_mask_from(fill_m, W, H)
         _nreg, _ = cv2.connectedComponents(roi_mask.astype(np.uint8))
         n_regions = _nreg - 1
 
-        st.write("📋 Nhận được: **%d vạch** · **%d vùng**  _(pixel vẽ = vị trí đếm, không lệch)_"
+        st.write("📋 Nhận được: **%d vạch** · **%d vùng**  _(đọc từ pixel bạn vẽ — bám sát, không lệch)_"
                  % (len(lines), n_regions))
 
-        # PREVIEW: hiện TẤT CẢ hình đã vẽ (vạch + mọi vùng) trước khi chạy
+        # PREVIEW: hiện TẤT CẢ hình (vạch + mọi vùng) trước khi chạy
         if lines or roi_mask.any():
             prev = np.array(st.session_state.bg_image.convert("RGB"))
             for A, B in lines:
@@ -305,9 +297,10 @@ if uploaded_file is not None:
                 cnts, _ = cv2.findContours(cm, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
                 cv2.drawContours(prev, cnts, -1, (0, 0, 255), 3)
                 cv2.fillPoly(prev, cnts, (40, 40, 160))
-            st.image(prev, channels="RGB", caption="📌 Hình sẽ hiển thị khi chạy (vạch tím + vùng đỏ)")
+            st.image(prev, channels="RGB",
+                     caption="📌 PREVIEW — hình sẽ hiển thị khi chạy (vạch tím + vùng đỏ) = y hệt bạn vẽ")
 
-        # --- 5. 1 NÚT CHẠY ĐẾM (hiện TẤT CẢ hình) ---
+        # --- 5. NÚT CHẠY ĐẾM (TẤT CẢ hình hoạt động) ---
         if btn_run:
             st.markdown("---")
             st.subheader("📟 Màn Hình Giám Sát Real-time")
@@ -316,9 +309,7 @@ if uploaded_file is not None:
             else:
                 st.write("Chạy với **%d vạch** + **%d vùng** — mọi hình trên đều được vẽ & đếm."
                          % (len(lines), n_regions))
-                counter_obj = MultiCounter(
-                    lines=lines,
-                    roi_mask=(roi_mask if roi_mask.any() else None))
+                counter_obj = MultiCounter(lines=lines, roi_mask=(roi_mask if roi_mask.any() else None))
                 if perf_mode.startswith("Chất lượng"):
                     runner = run_ai_quality
                 elif perf_mode.startswith("Siêu nhanh"):
