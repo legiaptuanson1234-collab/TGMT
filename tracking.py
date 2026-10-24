@@ -59,6 +59,9 @@ def run_ai_system(model_path, video_in, video_out, counter_obj, stframe,
 
     prev_time = time.time()
     last_save_time = 0
+    _last_push = 0.0
+    _last_push_frac = -1.0
+    total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT) or 0)
     track_history = defaultdict(list)
     track_time = defaultdict(list)
     speed_history = defaultdict(float)
@@ -191,9 +194,18 @@ def run_ai_system(model_path, video_in, video_out, counter_obj, stframe,
         cv2.putText(frame, status_text, (290, 32), cv2.FONT_HERSHEY_DUPLEX, 0.6, status_color, 1)
 
         out.write(frame)
-        if frame_count % max(1, disp_every) == 0:
-            disp = cv2.resize(frame, (848, 477))
-            stframe.image(cv2.cvtColor(disp, cv2.COLOR_BGR2RGB), channels="RGB")
+        # [v8] KHÔNG còn st.image tung từ thread (nguyên nhân LAG/đơ trang Streamlit Cloud
+        # khi thread ép UI render ~15 lần/s). Khung live đọc từ TrafficStore (GUI poll
+        # bằng st.fragment). Chỉ push progress chữ (rất nhẹ, throttle 0.7s/lần).
+        if stframe is not None and total_frames > 0:
+            frac = min(1.0, frame_count / total_frames)
+            if current_time - _last_push >= 0.7 or abs(frac - _last_push_frac) > 0.05:
+                _last_push = current_time
+                _last_push_frac = frac
+                try:
+                    stframe.progress(frac, text="AI đang xử lý khung %d (xem live ở Tab 2 — không đơ nữa)" % int(frame_count))
+                except Exception:
+                    pass
 
     cap.release()
     out.release()

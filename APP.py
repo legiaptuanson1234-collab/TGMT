@@ -255,11 +255,55 @@ with st.sidebar:
     if _thread_done():
         btn_run = _btn_full_width("🚀 BẮT ĐẦU CHẠY AI (đồng thời mở chatbot)")
     else:
-        st.info("⏳ AI đang chạy ở tab 2/3/4 — dùng nút Tạm dừng/Dừng bên đó.")
+        st.info("⏳ AI đang chạy nền — dùng Tab 2 (Giám sát) để xem live + Tạm dừng/Dừng.")
         btn_run = False
     if st.session_state.get("_video_loaded") and st.session_state.get("_has_shapes"):
         st.success("✅ Đã nạp %s · %d hình · sẵn sàng chạy" % (
             st.session_state.get("_vname", "?"), st.session_state.get("_nshapes", 0)))
+
+
+# ================= fragment LIVE (chỉ vẽ lại panel này — KHÔNG chạm canvas) =================
+def _live_panel():
+    """Chạy trong st.fragment: tự refresh khung + KPI + bảng sự kiện mỗi 0.5s
+    mà KHÔNG rerun cả trang (hết hiện tượng đơ canvas / chatbot / tab khác)."""
+    s = store.stats()
+    _kpi_row()
+    f1, f2 = st.columns([3, 1])
+    with f1:
+        fr = store.get_frame()
+        if fr is not None:
+            st.image(cv2.cvtColor(fr, cv2.COLOR_BGR2RGB), channels="RGB",
+                     caption="Khung mới nhất (live từ thread AI)")
+            if s["running"]:
+                st.progress(min(1.0, s["video_sec"] / 600.0) if s["video_sec"] > 0 else 0.0,
+                            text="Video: phút thứ %.0f · %s" % (s["video_sec"] / 60.0, s["status"]))
+        elif s["running"]:
+            st.info("Chờ khung đầu tiên (AI vừa khởi động YOLO)...")
+        else:
+            st.info("Chưa có khung — bấm 🚀 CHẠY ở Sidebar (hoặc Tab 1) rồi quay lại đây.")
+    with f2:
+        st.markdown("**Điều khiển**")
+        if not _thread_done():
+            if st.button("⏯️ Tạm dừng / Tiếp tục", key="btn_pause", use_container_width=True):
+                control.toggle_pause()
+                st.rerun()
+            if st.button("⛔ Dừng hẳn", key="btn_stop", use_container_width=True):
+                control.request_stop()
+            st.caption("Thread: " + ("⏸ tạm dừng" if control.paused else "▶ đang chạy"))
+        else:
+            st.success("Kết thúc: **%d xe** · %s" % (s["total"], s["status"]))
+    _mini_stats_box()
+    evs = store.events[-15:][::-1]
+    if evs:
+        st.markdown("**Bảng sự kiện mới nhất (live)**")
+        import pandas as pd
+        df = pd.DataFrame(evs)
+        df["Loai"] = [_CLS.get(e["cls"], "?") for e in evs]
+        st.dataframe(df[["wall", "t", "Loai", "speed"]], use_container_width=True, height=240)
+
+
+_CLS = {0: "Ô tô", 1: "Xe máy", 2: "Xe tải", 3: "Xe bus", 4: "Xe ba gác"}
+
 
 with tab1:
     st.subheader("📥 Nạp video — 🖊️ Vẽ vạch (tím) / vùng (xanh lá) — rồi bấm CHẠY")
@@ -373,67 +417,49 @@ if btn_run:
         st.success("🚀 AI đang chạy NỀN — chuyển Tab 2 (Giám sát) hoặc Tab 4 (Chatbot) ngay, không phải chờ!")
         st.rerun()
 
-# ---------------- TAB 2: GIÁM SÁT REAL-TIME ----------------
+# ---------------- TAB 2: GIÁM SÁT REAL-TIME (fragment tự refresh, không đơ) ----------------
 with tab2:
-    st.subheader("📟 Giám sát trực tiếp (dữ liệu từ thread AI, không làm đơ màn hình)")
-    _kpi_row()
-    f1, f2 = st.columns([3, 1])
-    with f1:
-        fr = store.get_frame()
-        if fr is not None:
-            st.image(cv2.cvtColor(fr, cv2.COLOR_BGR2RGB), channels="RGB", caption="Khung mới nhất (live từ thread)")
-        else:
-            st.info("Chưa có khung — bấm 🚀 CHẠY ở Tab 1 (hoặc Sidebar) rồi quay lại đây.")
-    with f2:
-        st.markdown("**Điều khiển**")
-        if not _thread_done():
-            if st.button("⏯️ Tạm dừng / Tiếp tục"):
-                control.toggle_pause()
-            if st.button("⛔ Dừng hẳn"):
-                control.request_stop()
-            st.caption("Thread AI: " + ("⏸ tạm dừng" if control.paused else "▶ đang chạy"))
-        else:
-            s = store.stats()
-            st.success("Kết thúc: %d xe · %s" % (s["total"], s["status"]))
-        if st.button("🔄 Làm mới khung & KPI"):
-            st.rerun()
-    _mini_stats_box()
-    # Bảng sự kiện mới nhất (live)
-    evs = store.events[-15:][::-1]
-    if evs:
-        st.markdown("**Bảng sự kiện mới nhất (live)**")
-        import pandas as pd
-        df = pd.DataFrame(evs)[["wall", "t", "cls", "speed"]]
-        df["Loai"] = [counting.BaseCounter().class_names.get(c, "?") for c in df["cls"]]
-        st.dataframe(df.drop(columns=["cls"]), use_container_width=True, height=260)
+    st.subheader("📟 Giám sát trực tiếp (data từ thread AI — chỉ panel này tự cập nhật, canvas/chatbot không bị đụng)")
+    if hasattr(st, "fragment"):
+        @st.fragment(run_every=0.5)
+        def _live2():
+            _live_panel()
+        _live2()
+    else:
+        _live_panel()
 
 # ---------------- TAB 3: THỐNG KÊ & ĐỒ THỊ ----------------
 with tab3:
     st.subheader("📊 Thống kê & mật độ theo thời gian")
-    _kpi_row()
     s = store.stats()
     if s["events"]:
         import pandas as pd
-        bdf = pd.DataFrame({
-            "phút": list(store.bins.keys()),
-            **{("xe%d" % c): [store.bins[m].get(c, 0) for m in store.bins.keys()] for c in range(5)}
-        })
         c1, c2 = st.columns(2)
         with c1:
-            st.markdown("**Mật độ xe/phút (cumulative)**")
-            stack = bdf.set_index("phút")[["xe0", "xe1", "xe2", "xe3", "xe4"]]
-            st.bar_chart(stack.cumsum().stack())
+            st.markdown("**Xe/phút theo từng phút video**")
+            bdf = pd.DataFrame({
+                "mat_do_xe_phut": [store.bin_total[m] for m in sorted(store.bin_total)],
+            })
+            bdf = bdf.reset_index().rename(columns={"index": "phut"})
+            bdf.columns = ["phut", "mat_do_xe_phut"]
+            st.bar_chart(bdf.set_index("phut")["mat_do_xe_phut"])
         with c2:
-            st.markdown("**Phân bố loại xe (tổng)**")
-            st.bar_chart({k: v for k, v in s["counts"].items() if v > 0})
-        st.markdown("**Mật độ 5 phút gần nhất: %d xe/phút** · Trạng thái: %s · TB km/h: %.1f"
+            st.markdown("**Phân bố loại xe (tổng từ đầu)**")
+            total_now = s["total"] or 1
+            cnt_df = pd.DataFrame({
+                "Loai": [ _CLS[c] for c in range(5) ],
+                "So xe": [ s["counts"].get(c, 0) for c in range(5) ],
+                "Tiep (%)": [ round(100.0 * s["counts"].get(c, 0) / total_now, 1) for c in range(5) ],
+            })
+            st.bar_chart(cnt_df.set_index("Loai")["So xe"])
+            st.dataframe(cnt_df, use_container_width=True, hide_index=True)
+        st.markdown("**Mật độ 5 phút gần nhất: %d xe/phút** · Trạng thái: %s · Tốc độ TB: %.1f km/h"
                     % (s["per_minute"], s["status"], s["avg_speed"]))
         if s["peak"]:
-            st.markdown("🔺 **Đỉnh cao điểm**: phút %d–%d (%d xe — 50%% đỉnh = %d)" % (
-                s["peak"]["minute"], s["peak"]["minute"] + 1, s["peak"]["total"],
-                int(s["peak"]["total"] * 0.5)))
+            st.markdown("🔺 **Đỉnh cao điểm**: phút %d–%d (%d xe/phút)" % (
+                s["peak"]["minute"], s["peak"]["minute"] + 1, s["peak"]["total"]))
     else:
-        st.info("Chưa có dữ liệu — chạy AI (Tab 1) rồi quay lại xem đồ thị. Đồ thị cập nhật LIÊN TỤC khi video chạy.")
+        st.info("Chưa có dữ liệu — bấm 🚀 CHẠY (Sidebar) rồi quay lại đây. Đồ thị cập nhật LIÊN TỤC khi video chạy.")
 
 # ---------------- TAB 4: CHATBOT ----------------
 with tab4:
@@ -487,5 +513,5 @@ with tab5:
     if s["events"]:
         import pandas as pd
         st.markdown("**Xem nhanh (10 sự kiện gần nhất)**")
-        evs = [dict(e, Loai=counting.BaseCounter().class_names.get(e["cls"], "?")) for e in store.events[-10:][::-1]]
+        evs = [dict(e, Loai=_CLS.get(e["cls"], "?")) for e in store.events[-10:][::-1]]
         st.dataframe(pd.DataFrame(evs), use_container_width=True)
