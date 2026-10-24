@@ -17,12 +17,16 @@ def _safe_dir(name):
         os.makedirs(alt, exist_ok=True)
         return alt
 
+# CLASS_NAMES module-level (duoc APP.py/tab doc ma khong tao file CSV)
+CLASS_NAMES = {0: 'O To', 1: 'Xe May', 2: 'Xe Tai', 3: 'Xe Bus', 4: 'Xe Ba Gac'}
+
+
 class BaseCounter:
     def __init__(self):
         self.counted_ids = set()
         self.total_vehicles = 0
         self.vehicle_counts = {0: 0, 1: 0, 2: 0, 3: 0, 4: 0}
-        self.class_names = {0: 'O To', 1: 'Xe May', 2: 'Xe Tai', 3: 'Xe Bus', 4: 'Xe Ba Gac'}
+        self.class_names = CLASS_NAMES
         # ==========================================
         # DÙNG ĐƯỜNG DẪN TƯƠNG ĐỐI (DÙNG ĐƯỢC TRÊN WEB)
         # ==========================================
