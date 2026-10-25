@@ -203,7 +203,9 @@ def run_ai_system(model_path, video_in, video_out, counter_obj, stframe,
                 _last_push = current_time
                 _last_push_frac = frac
                 try:
-                    stframe.progress(frac, text="AI đang xử lý khung %d (xem live ở Tab 2 — không đơ nữa)" % int(frame_count))
+                    # [v9.4] DUỠI CÔ CHẾ V7: ghi vao st.empty CO DINH (tra _LivePush),
+                    # trinh duyet tao noi -> HET nhip nhay. (_StubFrame: no-op.)
+                    stframe.image(frame)
                 except Exception:
                     pass
 
