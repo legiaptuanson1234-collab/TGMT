@@ -195,6 +195,12 @@ if "chat" not in st.session_state:
 if "chat_q" not in st.session_state:
     st.session_state.chat_q = ""
 
+class _StubFrame:
+    """[v9.2] Thread AI chi duoc choStub -> NO-OP (UI chi do fragment cap nhat).
+    Viep st.image/st.progress tu thread nen xac nghich voi fragment -> nhip nhay + 'an/hiện'."""
+    def __getattr__(self, _name):
+        return lambda *a, **k: None
+
 store = st.session_state.store
 control = st.session_state.control
 _CLS = {0: "Ô tô", 1: "Xe máy", 2: "Xe tải", 3: "Xe bus", 4: "Xe ba gác"}
@@ -242,7 +248,10 @@ with st.sidebar:
     st.markdown("**3. Hiệu năng**")
     perf_mode = st.radio("Hiệu năng",
                          ["Nhanh (CPU 640x360)", "Siêu nhanh (CPU demo 480x270)", "Chất lượng (GPU 1280x720)"],
-                         label_visibility="collapsed")
+                         index=1, label_visibility="collapsed")
+    st.caption("🌐 **Cloud không có GPU** (CPU only) — chọn *Chất lượng (GPU)* vẫn chạy bằng CPU nên chậm (FPS ~4-6). "
+               "**Đã chọn sẵn 'Siêu nhanh (480x270)' cho demo mượt nhất.** "
+               "Chạy app trên **máy có GPU** thì chọn *Chất lượng (GPU 1280x720)*.")
 
     if _thread_done():
         btn_run = _btn_full_width("▶️ BẮT ĐẦU CHẠY (+ mở CHATBOT)")
@@ -387,7 +396,7 @@ if btn_run:
         th = threading.Thread(
             target=_ai_worker,
             args=(runner, "best.pt", video_path, st.session_state["out_path"],
-                  counter_obj, st.empty(), store, control),
+                  counter_obj, _StubFrame(), store, control),
             daemon=True)
         st.session_state.run_thread = th
         th.start()
@@ -418,13 +427,37 @@ def _live_panel():
         st.dataframe(df[["wall", "t", "Loai", "speed"]], use_container_width=True, height=240)
 
 
+def _live_panel_v92():
+    """[v9.2] Key on dinh + anh nho (560px) -> fragment cap nhat TAI CHO (khong tao lai),
+    payload nho nen web Cloud hong con nhip nhay / an-hien. run_every 0.8s (mat du) de AI kip ghi."""
+    fr = store.get_frame()
+    if fr is not None:
+        rgb = cv2.cvtColor(cv2.resize(fr, (560, 315)), cv2.COLOR_BGR2RGB)
+        st.image(rgb, channels="RGB", width=560, key="_live_img",
+                 caption="📺 Khung mới nhất (live từ thread AI) — cập nhật ~1.2s/lần, KHÔNG nhấp nháy")
+    else:
+        k = "_live_wait" if store.stats()["running"] else "_live_idle"
+        st.info("Chờ khung đầu tiên (YOLO vừa khởi động)..." if store.stats()["running"]
+                else "Chưa có khung — ▶️ CHẠY ở Bảng điều khiển rồi quay lại đây.", key=k)
+    _kpi_row()
+    _mini_stats_box()
+    evs = store.events[-15:][::-1]
+    if evs:
+        st.markdown("**Bảng sự kiện mới nhất (live)**", key="_live_ev_t")
+        import pandas as pd
+        df = pd.DataFrame(evs)
+        df["Loai"] = [_CLS.get(e["cls"], "?") for e in evs]
+        st.dataframe(df[["wall", "t", "Loai", "speed"]], use_container_width=True,
+                     height=240, key="_live_ev_d")
+
+
 if hasattr(st, "fragment"):
-    @st.fragment(run_every=0.5)
+    @st.fragment(run_every=0.8)
     def _live_auto():
-        _live_panel()
+        _live_panel_v92()
     _live_auto()
 else:
-    _live_panel()
+    _live_panel_v92()
 
 # ================= THỐNG KÊ & ĐỒ THỊ (an toan - sua KeyError v8) =================
 st.subheader("📊 Thống kê & mật độ theo thời gian (cập nhật LIÊN TỤC khi video chạy)")
