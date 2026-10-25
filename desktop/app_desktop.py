@@ -185,12 +185,21 @@ class TrafficAIApp(ctk.CTk):
             pass
         self._after(800, self._poll_live)
 
+    def _fit_img(self, img):
+        """[FIX vid be] co PHONG image cho duong khit khung video (giu ty le 16:9).
+        Ban cu chi thumbnail (co nho) nen lan dau khung con nho -> vid bi be."""
+        fw, fh = self.video_frame.winfo_width() - 20, self.video_frame.winfo_height() - 20
+        if fw > 60 and fh > 60:
+            w, h = img.size
+            s = min(fw / w, fh / h)
+            nw, nh = max(1, int(w * s)), max(1, int(h * s))
+            if (nw, nh) != (w, h):
+                img = img.resize((nw, nh), Image.LANCZOS)
+        return img
+
     def _show_frame(self, bgr):
         rgb = cv2.cvtColor(bgr, cv2.COLOR_BGR2RGB)
-        img = Image.fromarray(rgb)
-        fw, fh = self.video_frame.winfo_width() - 20, self.video_frame.winfo_height() - 20
-        if fw > 50 and fh > 50:
-            img.thumbnail((fw, fh), Image.Resampling.LANCZOS)
+        img = self._fit_img(Image.fromarray(rgb))
         self._imgtk = ImageTk.PhotoImage(image=img)
         self.video_label.configure(image=self._imgtk, text="")
 
@@ -301,13 +310,9 @@ class TrafficAIApp(ctk.CTk):
                     # ghi frame da ve vao file video
                     if self.out_video:
                         self.out_video.write(processed_frame)
-                    # hien trang (danh y hieu v7)
+                    # hien trang - [FIX vid be] co PHONG duong khit khung (khong chi co nho)
                     cv2image = cv2.cvtColor(processed_frame, cv2.COLOR_BGR2RGB)
-                    img = Image.fromarray(cv2image)
-                    f_w = self.video_frame.winfo_width() - 20
-                    f_h = self.video_frame.winfo_height() - 20
-                    if f_w > 0 and f_h > 0:
-                        img.thumbnail((f_w, f_h), Image.Resampling.LANCZOS)
+                    img = self._fit_img(Image.fromarray(cv2image))
                     self._imgtk = ImageTk.PhotoImage(image=img)
                     self.video_label.configure(image=self._imgtk, text="")
                 else:
