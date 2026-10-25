@@ -430,25 +430,26 @@ def _live_panel():
 def _live_panel_v92():
     """[v9.2] Key on dinh + anh nho (560px) -> fragment cap nhat TAI CHO (khong tao lai),
     payload nho nen web Cloud hong con nhip nhay / an-hien. run_every 0.8s (mat du) de AI kip ghi."""
+    # [v9.2-fix] st.image/st.info/st.markdown KHÔNG có tham so key (Streamlit >=1.53
+    # chi widget input moi nhan key) -> bo key de het TypeError; fragment van
+    # cap nhat TAI CHO theo cau truc nen van khong nhip nhay.
     fr = store.get_frame()
     if fr is not None:
         rgb = cv2.cvtColor(cv2.resize(fr, (560, 315)), cv2.COLOR_BGR2RGB)
-        st.image(rgb, channels="RGB", width=560, key="_live_img",
+        st.image(rgb, channels="RGB", width=560,
                  caption="📺 Khung mới nhất (live từ thread AI) — cập nhật ~1.2s/lần, KHÔNG nhấp nháy")
     else:
-        k = "_live_wait" if store.stats()["running"] else "_live_idle"
         st.info("Chờ khung đầu tiên (YOLO vừa khởi động)..." if store.stats()["running"]
-                else "Chưa có khung — ▶️ CHẠY ở Bảng điều khiển rồi quay lại đây.", key=k)
+                else "Chưa có khung — ▶️ CHẠY ở Bảng điều khiển rồi quay lại đây.")
     _kpi_row()
     _mini_stats_box()
     evs = store.events[-15:][::-1]
     if evs:
-        st.markdown("**Bảng sự kiện mới nhất (live)**", key="_live_ev_t")
+        st.markdown("**Bảng sự kiện mới nhất (live)**")
         import pandas as pd
         df = pd.DataFrame(evs)
         df["Loai"] = [_CLS.get(e["cls"], "?") for e in evs]
-        st.dataframe(df[["wall", "t", "Loai", "speed"]], use_container_width=True,
-                     height=240, key="_live_ev_d")
+        st.dataframe(df[["wall", "t", "Loai", "speed"]], use_container_width=True, height=240)
 
 
 if hasattr(st, "fragment"):
