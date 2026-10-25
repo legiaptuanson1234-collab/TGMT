@@ -26,10 +26,6 @@ BUILD_TAG = "TGMT-v7 · 1 hình + Line/ROI (giữ hình khi đổi) · đọc pi
 W, H = DISPLAY_W, DISPLAY_H       # 1280x720 (hệ toạ độ đếm)
 DX, DY = 960, 540                # canvas hiển thị (fit màn, thấy đủ đường)
 
-# [CHATBOT] kho du lieu real-time (thread AI ghi, chatbot + CSV doc - khong kho man hinh)
-if "store" not in st.session_state:
-    st.session_state.store = TrafficStore()
-
 
 def _workfile(name):
     try:
@@ -237,6 +233,10 @@ def _read_shapes_color(result, W, H):
 
 # --- 1. CẤU HÌNH ---
 st.set_page_config(page_title="Traffic AI - UTT", layout="wide", page_icon="🚦")
+
+# [CHATBOT] kho du lieu real-time (thread AI ghi, chatbot + CSV doc - khong kho man hinh)
+if "store" not in st.session_state:
+    st.session_state.store = TrafficStore()
 st.title("🚦 HỆ THỐNG ĐẾM XE & CẢNH BÁO GIAO THÔNG AI")
 st.markdown("**Đồ án Kỹ thuật - Sinh viên: Lê Giáp Tuấn Sơn - UTT**")
 st.caption("🔖 " + BUILD_TAG)
@@ -291,6 +291,9 @@ if uploaded_file is not None:
             st.rerun()
 
         st.subheader("🖊️ Vẽ vạch / vùng trên ảnh (sau đó bấm KHỞI ĐỘNG AI)")
+        st.success("✅ **Khung đường đã sẵn sàng** — hộp vẽ bên dưới hiển thị khung nền + lưới. "
+                   "Nếu nền hộp vẽ (canvas) bị mất trên Cloud (bug nền của thư viện canvas), "
+                   "**dùng khung tham khảo phía dưới làm chuẩn đối chiếu** để vẽ đúng vị trí.")
 
         # 1 CANVAS DUY NHẤT. Key CHỈ đổi khi "Xoá hết & Vẽ lại" (reset),
         # KHÔNG đổi khi chọn Line/ROI -> ĐỔI CHẾ ĐỘ MÀ HÌNH VẼ CŨ VẪN GIỮ.
@@ -320,6 +323,14 @@ if uploaded_file is not None:
         st.caption("💡 **Vạch** = kéo 1 nét · **Vùng** = click các góc (click **góc đầu** để khép, "
                    "**góc giữa** để bỏ góc). Đổi chế độ Line↔ROI **không mất hình đã vẽ**. "
                    "Sửa: Undo ↶ / thùng rác trên canvas, hoặc 'Xoá hết & Vẽ lại'.")
+
+        # [FIX Cloud] Kan man hinh LUON DU (road + grid + toa do) - neu nen canvas
+        # bi mat (bug 0.13 tren Cloud) thi van thay duong de doi chieu. O may (local
+        # hoac nen canvas hien binh thuong) thi lam khung tham chieu phu.
+        with st.expander("🖼️ Khung tham chiếu (đường + lưới toạ độ) — mở ra để vẽ không sai vị trí",
+                         expanded=(not _HAS_CANVAS)):
+            st.image(bg_pil_grid, width=DX,
+                     caption="Ảnh nền có lưới 100px + mốc toạ độ. Vẽ trên canvas phía trên bám theo khung này.")
 
         # Đọc MÀU NÉT VẼ (tím=vạch, xanh-lá=vùng) - KHÔNG so nền -> không phình/lech
         lines, roi_mask = _read_shapes_color(canvas_result, W, H)
