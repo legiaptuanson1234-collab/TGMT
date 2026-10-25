@@ -195,11 +195,86 @@ if "chat" not in st.session_state:
 if "chat_q" not in st.session_state:
     st.session_state.chat_q = ""
 
-class _StubFrame:
-    """[v9.2] Thread AI chi duoc choStub -> NO-OP (UI chi do fragment cap nhat).
-    Viep st.image/st.progress tu thread nen xac nghich voi fragment -> nhip nhay + 'an/hiện'."""
-    def __getattr__(self, _name):
-        return lambda *a, **k: None
+_CURRENT = {"img": None, "kpi": None, "tbl": None}   # [v9.4] st.empty CO DINH moi nhat (moi lan rerun)
+
+
+def _kpi_html(st_, frac):
+    """KPI bang HTML (thre n ghi vao st.empty -> tao noi, khong nhip nhay)."""
+    def m2(ic, lb, val, delta=""):
+        d = ('<div style="font-size:.72em;color:#7ee787">%s</div>' % delta) if delta else ""
+        return ('<div style="flex:1;min-width:104px;padding:6px 10px;background:#0e1117;'
+                'border:1px solid #26272b;border-radius:8px">'
+                '<div style="font-size:.78em;color:#a3a8b3">%s %s</div>'
+                '<div style="font-size:1.3em;font-weight:700;color:#f0f2f6">%s</div>%s</div>' % (ic, lb, val, d))
+    row = ('<div style="display:flex;gap:8px;flex-wrap:wrap">'
+          + m2("\U0001F6A6", "Trạng thái", st_["status"],
+               "đang chạy" if st_["running"] else ("kết thúc" if st_["finished"] else "chờ"))
+          + m2("∑", "Tổng xe", str(st_["total"]), ("%d/phút" % st_["per_minute"]) if st_["events"] else "")
+          + m2("▣", "Trong khung", str(st_["active_now"]))
+          + m2("⏱", "FPS", str(st_["fps"]))
+          + m2("⚡", "TB km/h", "%.1f" % st_["avg_speed"])
+          + "</div>")
+    pct = int(min(frac, 1.0) * 100)
+    bar = ('<div style="height:6px;background:#26272b;border-radius:4px;overflow:hidden;margin-top:6px">'
+           '<div style="height:100%%;width:%d%%;background:#2ea043"></div></div>'
+           '<div style="font-size:.78em;color:#a3a8b3;margin-top:2px">Video đã xử lý: %d%%</div>' % (pct, pct))
+    return row + bar
+
+
+class _LivePush:
+    """[v9.4] DUỠI CƠ CHẾ V7: thread AI ghi vao cac st.empty() CO DINH (_CURRENT).
+    Trinh duyet chi DOI anh tai choi (in-place update) - KHONG xoa/tao lai khung
+    -> HET hien tuong nhip nhay an/hien (do fragment tao lai DOM moi 0.8s).
+    Video LO 960x540 (chu so luong 1280x720, chi hien thi lo ra)."""
+    def __init__(self, store_):
+        self._store = store_
+        self._last_img, self._last_kpi, self._last_tbl = 0.0, 0.0, 0.0
+
+    def image(self, frame_bgr, **kw):
+        import time as _t
+        now = _t.time()
+        frac = self._frac()
+        if now - self._last_img >= 0.35:
+            self._last_img = now
+            c = _CURRENT.get("img")
+            if c is not None:
+                try:
+                    rgb = cv2.cvtColor(cv2.resize(frame_bgr, (960, 540)), cv2.COLOR_BGR2RGB)
+                    c.image(rgb, channels="RGB", width=960,
+                            caption="📺 Khung mới nhất (live từ thread AI — chạy LIÊN TỤC, không nhấp nháy)")
+                except Exception:
+                    pass
+        if now - self._last_kpi >= 1.5:
+            self._last_kpi = now
+            k = _CURRENT.get("kpi")
+            if k is not None:
+                try:
+                    k.markdown(_kpi_html(self._store.stats(), frac), unsafe_allow_html=True)
+                except Exception:
+                    pass
+        if now - self._last_tbl >= 2.0:
+            self._last_tbl = now
+            b = _CURRENT.get("tbl")
+            if b is not None and self._store.events:
+                try:
+                    import pandas as pd
+                    evs = self._store.events[-15:][::-1]
+                    df = pd.DataFrame(evs)
+                    df["Loai"] = [_CLS.get(e["cls"], "?") for e in evs]
+                    b.dataframe(df[["wall", "t", "Loai", "speed"]], use_container_width=True, height=230)
+                except Exception:
+                    pass
+
+    def _frac(self):
+        try:
+            s = self._store.stats()
+            return min(1.0, (s["video_sec"] / 360.0))
+        except Exception:
+            return 0.0
+
+    # hinh thuoc tinh bo sung (de tracking.py goi duoc)
+    def progress(self, frac, text=""):
+        pass
 
 store = st.session_state.store
 control = st.session_state.control
@@ -396,7 +471,7 @@ if btn_run:
         th = threading.Thread(
             target=_ai_worker,
             args=(runner, "best.pt", video_path, st.session_state["out_path"],
-                  counter_obj, _StubFrame(), store, control),
+                  counter_obj, _LivePush(store), store, control),
             daemon=True)
         st.session_state.run_thread = th
         th.start()
@@ -405,60 +480,35 @@ if btn_run:
         st.success("🚀 AI đang chạy NỀN — video + KPI cập nhật bên dưới, HỎI CHATBOT ngay!")
         st.rerun()
 
-# ================= VIDEO LIVE + KPI (fragment - chi panel nay tu cap nhat) =================
-def _live_panel():
-    """Chỉ panel này tự refresh (0.5s) — canvas, chatbot, sidebar KHÔNG bị rerun -> hết đơ."""
-    fr = store.get_frame()
-    if fr is not None:
-        st.image(cv2.cvtColor(fr, cv2.COLOR_BGR2RGB), width=980,
-                 caption="📺 Khung mới nhất (live từ thread AI)")
-    elif store.stats()["running"]:
-        st.info("Chờ khung đầu tiên (YOLO vừa khởi động)...")
-    else:
-        st.info("Chưa có khung — ▶️ CHẠY ở Bảng điều khiển rồi quay lại đây.")
-    _kpi_row()
-    _mini_stats_box()
-    evs = store.events[-15:][::-1]
-    if evs:
-        st.markdown("**Bảng sự kiện mới nhất (live)**")
-        import pandas as pd
-        df = pd.DataFrame(evs)
-        df["Loai"] = [_CLS.get(e["cls"], "?") for e in evs]
-        st.dataframe(df[["wall", "t", "Loai", "speed"]], use_container_width=True, height=240)
-
-
-def _live_panel_v92():
-    """[v9.2] Key on dinh + anh nho (560px) -> fragment cap nhat TAI CHO (khong tao lai),
-    payload nho nen web Cloud hong con nhip nhay / an-hien. run_every 0.8s (mat du) de AI kip ghi."""
-    # [v9.2-fix] st.image/st.info/st.markdown KHÔNG có tham so key (Streamlit >=1.53
-    # chi widget input moi nhan key) -> bo key de het TypeError; fragment van
-    # cap nhat TAI CHO theo cau truc nen van khong nhip nhay.
-    fr = store.get_frame()
-    if fr is not None:
-        rgb = cv2.cvtColor(cv2.resize(fr, (560, 315)), cv2.COLOR_BGR2RGB)
-        st.image(rgb, channels="RGB", width=560,
-                 caption="📺 Khung mới nhất (live từ thread AI) — cập nhật ~1.2s/lần, KHÔNG nhấp nháy")
-    else:
-        st.info("Chờ khung đầu tiên (YOLO vừa khởi động)..." if store.stats()["running"]
-                else "Chưa có khung — ▶️ CHẠY ở Bảng điều khiển rồi quay lại đây.")
-    _kpi_row()
-    _mini_stats_box()
-    evs = store.events[-15:][::-1]
-    if evs:
-        st.markdown("**Bảng sự kiện mới nhất (live)**")
-        import pandas as pd
-        df = pd.DataFrame(evs)
-        df["Loai"] = [_CLS.get(e["cls"], "?") for e in evs]
-        st.dataframe(df[["wall", "t", "Loai", "speed"]], use_container_width=True, height=240)
-
-
-if hasattr(st, "fragment"):
-    @st.fragment(run_every=0.8)
-    def _live_auto():
-        _live_panel_v92()
-    _live_auto()
+# ================= VIDEO LIVE + KPI + SU KIEEN (v9.4 - CO CHE V7, HET NHIP NHAY) =================
+# 3 st.empty CO DINH: thread AI (qua _LivePush) ghi TRUC TIẾP vao -> trinh duyet chi
+# DOI NOI DUNG tai choi (in-place). Khong dung st.fragment (fragment tao lai DOM = nhay
+# an/hien - chinh la loi v9.2/v9.3). Video hien thi LO (960x540).
+st.subheader("📺 Giám sát Real-time (video CHẠY LIÊN TỤC, không nhấp nháy — chuẩn v7)")
+_live_img = st.empty()
+_live_kpi = st.empty()
+_live_tbl = st.empty()
+_CURRENT["img"], _CURRENT["kpi"], _CURRENT["tbl"] = _live_img, _live_kpi, _live_tbl
+# hinh anh ban dau (truoc khi AI chay / sau moi lan rerun chi dung 1 lan, thread se thay)
+_fr0 = store.get_frame()
+if _fr0 is not None:
+    _live_img.image(cv2.cvtColor(cv2.resize(_fr0, (960, 540)), cv2.COLOR_BGR2RGB),
+                    channels="RGB", width=960, caption="📺 Khung mới nhất (live từ thread AI)")
+elif store.stats()["running"]:
+    _live_img.info("Chờ khung đầu tiên (YOLO vừa khởi động, ~1-5s)...")
 else:
-    _live_panel_v92()
+    _live_img.info("Chưa có khung — ▶️ CHẠY ở Bảng điều khiển rồi quay lại đây. "
+                   "Khi chạy: video + KPI + bảng sự kiện tự cập nhật LIÊN TỤC (không cần làm mới).")
+_live_kpi.markdown(_kpi_html(store.stats(), 0.0), unsafe_allow_html=True)
+if store.events:
+    _import_pd = __import__("pandas")
+    _evs0 = store.events[-15:][::-1]
+    _df0 = _import_pd.DataFrame(_evs0)
+    _df0["Loai"] = [_CLS.get(e["cls"], "?") for e in _evs0]
+    _live_tbl.dataframe(_df0[["wall", "t", "Loai", "speed"]], use_container_width=True, height=230)
+    _live_tbl.caption("")
+else:
+    _live_tbl.markdown("**📋 Bảng sự kiện mới nhất (live)** — chưa có sự kiện (chờ xe vượt vạch/vùng).")
 
 # ================= THỐNG KÊ & ĐỒ THỊ (an toan - sua KeyError v8) =================
 st.subheader("📊 Thống kê & mật độ theo thời gian (cập nhật LIÊN TỤC khi video chạy)")
