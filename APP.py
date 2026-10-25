@@ -1,24 +1,18 @@
-# APP.py - TGMT v9: "Traffic Copilot" (WEB BANA desktop v9.1 - y hieu desktop)
-# Layout: BANG DIEU KHIEN (sidebar) + VIDEO LON + KPI LIVE + CHATBOT (ben duoi)
-# Coi nhu app desktop: 1.Chon video -> 2.Che do -> 3.Hieu nang -> Ve -> CHAY -> Hoi bot.
-# [KHONG DO] thread AI chi GHI vao TrafficStore; GUI poll khung/KPI bang st.fragment
-# (chi panel live tu cap nhat, canvas + chatbot khong bi don).
 import streamlit as st
 import cv2
 import numpy as np
-import threading
-import time
 from PIL import Image, ImageDraw
 import os
 import tempfile
 
+# --- NHẬP CÁC MODULE AI CỦA BẠN (kèm "tự chữa" build cũ) ---
 import importlib, sys
 for _m in ("counting", "tracking"):
     sys.modules.pop(_m, None)
 import counting, tracking
 from tracking import run_ai_fast, run_ai_quality, run_ai_turbo, DISPLAY_W, DISPLAY_H
 from counting import MultiCounter
-from livestore import TrafficStore, RunControl
+from livestore import TrafficStore
 import trafficbot
 
 try:
@@ -27,15 +21,16 @@ try:
 except Exception:
     _HAS_CANVAS = False
 
-BUILD_TAG = "TGMT-v9 · GUI giống app desktop · Video lớn · Chatbot real-time · CSV live"
+BUILD_TAG = "TGMT-v7 · 1 hình + Line/ROI (giữ hình khi đổi) · đọc pixel (không lệch) · hết crash"
 
-W, H = DISPLAY_W, DISPLAY_H       # 1280x720 (he toa do dem)
-DX, DY = 960, 540                 # canvas ve (fit man, thay du duong)
+W, H = DISPLAY_W, DISPLAY_H       # 1280x720 (hệ toạ độ đếm)
+DX, DY = 960, 540                # canvas hiển thị (fit màn, thấy đủ đường)
 
-st.set_page_config(page_title="Traffic Copilot - UTT", layout="wide", page_icon="🚦")
+# [CHATBOT] kho du lieu real-time (thread AI ghi, chatbot + CSV doc - khong kho man hinh)
+if "store" not in st.session_state:
+    st.session_state.store = TrafficStore()
 
 
-# ================= helpers (giu nguyen - da test on) =================
 def _workfile(name):
     try:
         probe = os.path.join(os.getcwd(), ".__probe")
@@ -69,13 +64,14 @@ def _find_content_frame(video_path, target_idx=50, max_scan=400):
                 score = std - abs(mean - 120.0) / 5.0
                 if scanned - 1 == target:
                     cap.release()
-                    return frame, "cv2 OK · khung nend #%d (std=%.0f)" % (scanned - 1, std)
+                    return frame, "cv2 OK · khung nền #%d (std=%.0f)" % (scanned - 1, std)
                 if score > best_score:
                     best, best_score, best_idx = frame, score, scanned - 1
         cap.release()
         if best is not None:
-            return best, "cv2 OK · khung nend chi tiet nhat (#%d)" % best_idx
-        return None, "cv2 mo duoc file nhung %d frame dau deu trang/đen" % scanned
+            return best, "cv2 OK · khung nền chi tiết nhất (#%d)" % best_idx
+        return None, "cv2 mở được file nhưng %d frame đầu đều trắng/đen" % scanned
+
     try:
         import imageio
         reader = imageio.v2.get_reader(video_path, "ffmpeg")
@@ -90,14 +86,14 @@ def _find_content_frame(video_path, target_idx=50, max_scan=400):
             if std > 20 and 30 < mean < 225:
                 score = std - abs(mean - 120.0) / 5.0
                 if n - 1 == min(target_idx, 49):
-                    return fr, "ffmpeg OK · khung nend #%d" % n - 1
+                    return fr, "ffmpeg OK · khung nền #%d" % (n - 1)
                 if score > best_score:
-                    best, best_score, best_idx = fr, score
+                    best, best_score, best_idx = fr, score, n - 1
         if best is not None:
-            return best, "ffmpeg OK · khung nend chi tiet nhat (#%d)" % best_idx
-        return None, "ca OpenCV lan ffmpeg khong doc duoc video"
+            return best, "ffmpeg OK · khung nền chi tiết nhất (#%d)" % best_idx
+        return None, "cả OpenCV lẫn ffmpeg không đọc được video"
     except Exception as _e:
-        return None, "khong doc duoc video: %s" % _e
+        return None, "không đọc được video: %s" % _e
 
 
 def _bake_grid(rgb_img):
@@ -116,6 +112,8 @@ def _bake_grid(rgb_img):
 
 
 def _img(result):
+    """Lấy ảnh canvas (RGBA) về DXxDY. None nếu CHƯA VẼ GÌ (image_data=None)
+    hay lỗi — để app không crash khi load lại / chưa vẽ (sai IndexError cũ)."""
     if result is None:
         return None
     data = getattr(result, "image_data", None)
@@ -125,7 +123,7 @@ def _img(result):
         arr = np.asarray(data)
     except Exception:
         return None
-    if arr is None or arr.size == 0 or arr.ndim < 2:
+    if arr is None or arr.size == 0 or arr.ndim < 2:   # None/0-dim -> an toàn
         return None
     if arr.ndim == 4:
         arr = arr[:, :, :, 0]
@@ -136,12 +134,69 @@ def _img(result):
     return arr
 
 
-def _read_shapes_color(result, W, H):
-    """Doc mau net ve: tím #FF00FF = vach, xanh-la #00FF00 = vien ROI -> dien day.
-    Tra ve (lines=[(A,B),...], roi_mask) toa do 1280x720 - DUNG CẤU TRUC (moi
-    vach = 1 phan tu (diemA, diemB); roi_mask = 1 matrix dien day)."""
+def _shapes_from_json(result, W, H):
+    """DOC TRỰC TIẾP dữ liệu canvas (json_data.objects) -> (lines, polys)
+    tại toạ độ 1280x720 (hệ đếm). Đây là nguồn ĐÚNG CHUẨN (canvas trả toạ
+    độ chính xác từng nét/từng góc) - KHÔNG dùng "so màu pixel" (cách cũ bị
+    lệch/tàng hình do rescale ảnh nền sai khác giữa thư viện canvas & OpenCV).
+
+    - Vạch (line)   : obj có 'x1','y1','x2','y2' (tương đối so với left/top).
+    - Vùng (polygon): obj có 'points' (TUYỆT ĐỐI, toạ độ canvas) - KHÔNG cộng
+                      left/top (cộng thì bị LỆCH - đúng bug 'ROI tàng hình').
+    Mỗi nét = 1 vạch, mỗi đa giác = 1 vùng (vẽ N hình được)."""
     sx, sy = W / float(DX), H / float(DY)
-    canvas = _img(result)
+    lines, polys = [], []
+    jd = getattr(result, "json_data", None)
+    if not jd:
+        return lines, polys
+    objs = jd.get("objects", []) or []
+    for o in objs:
+        try:
+            if "points" in o:                       # VÙNG (đa giác) - điểm TUYỆT ĐỐI
+                pts = []
+                raw = o.get("points", [])
+                if raw and isinstance(raw, (list, tuple)) and len(raw) >= 2 and not isinstance(raw[0], (list, tuple, dict)):
+                    # flat: [x0,y0,x1,y1,...]
+                    for i in range(0, len(raw) - 1, 2):
+                        pts.append((int(raw[i] * sx), int(raw[i + 1] * sy)))
+                else:
+                    for p in raw:
+                        if isinstance(p, dict):
+                            pts.append((int(p.get("x", 0) * sx), int(p.get("y", 0) * sy)))
+                        elif isinstance(p, (list, tuple)) and len(p) >= 2:
+                            pts.append((int(p[0] * sx), int(p[1] * sy)))
+                if len(pts) >= 3:
+                    polys.append(pts)
+            elif "x1" in o and "x2" in o:           # VẠCH (line) - điểm TƯƠNG ĐỐI
+                L, T = int(o.get("left", 0)), int(o.get("top", 0))
+                a = (int((L + int(o["x1"])) * sx), int((T + int(o["y1"])) * sy))
+                b = (int((L + int(o["x2"])) * sx), int((T + int(o["y2"])) * sy))
+                if abs(a[0] - b[0]) + abs(a[1] - b[1]) >= 20:
+                    lines.append((a, b))
+        except Exception:
+            pass
+    return lines, polys
+
+
+def _bg_uri(bg_pil):
+    import io, base64
+    buf = io.BytesIO()
+    bg_pil.save(buf, format="PNG")
+    return "data:image/png;base64," + base64.b64encode(buf.getvalue()).decode("ascii")
+
+
+def _read_shapes_color(result, W, H):
+    """DOC MÀU NÉT VẼ TRỰC TIẾP từ ảnh canvas (RGBA) - KHÔNG so với ảnh nền
+    (cách cũ so nền bị LỆCH/PHÌNH khi render khác rescale -> 'tàng hình').
+
+    - Nét TÍM  #FF00FF = VẠCH (Line)        -> đọc từng nét, lấy 2 đầu (PCA)
+    - Nét XANH LÁ #00FF00 = VIỀN VÙNG (ROI)  -> contour ngoài -> điền đầy bên trong
+
+    Hai màu này không có trong video thật / lưới cam / mốc vàng -> tách sạch,
+    vẽ ở đâu đếm đúng đó. Vạch & vùng đọc CÙNG LÚC (đổi chế độ không mất hình).
+    Trả về (lines, roi_mask) tại toạ độ 1280x720 (hệ đếm)."""
+    sx, sy = W / float(DX), H / float(DY)
+    canvas = _img(result)                      # (DY, DX, 4) RGBA hoặc None
     roi_mask = np.zeros((H, W), bool)
     lines = []
     if canvas is None:
@@ -149,6 +204,8 @@ def _read_shapes_color(result, W, H):
     R = canvas[:, :, 0].astype(np.int16)
     G = canvas[:, :, 1].astype(np.int16)
     B = canvas[:, :, 2].astype(np.int16)
+
+    # --- VẠCH: nét TÍM (#FF00FF) ---
     mag = ((R > 150) & (B > 150) & (G < 100)).astype(np.uint8) * 255
     mag = cv2.dilate(mag, np.ones((3, 3), np.uint8))
     cnts, _ = cv2.findContours(mag, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_NONE)
@@ -165,15 +222,24 @@ def _read_shapes_color(result, W, H):
         p2 = (int(pts[i2][0] * sx), int(pts[i2][1] * sy))
         if abs(p1[0] - p2[0]) + abs(p1[1] - p2[1]) >= 20:
             lines.append((p1, p2))
+
+    # --- VÙNG: nét XANH LÁ (#00FF00 = viền đa giác) -> điền đầy bên trong ---
     grn = ((G > 170) & (R < 90) & (B < 90)).astype(np.uint8) * 255
     grn = cv2.morphologyEx(grn, cv2.MORPH_CLOSE, np.ones((9, 9), np.uint8))
     gcnts, _ = cv2.findContours(grn, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
     gmask = np.zeros_like(grn)
     for c in gcnts:
-        if cv2.contourArea(c) >= 300:
-            cv2.drawContours(gmask, [c], -1, 255, -1)
+        if cv2.contourArea(c) >= 300:          # loại blob nhỏ (nhiễu)
+            cv2.drawContours(gmask, [c], -1, 255, -1)   # điền bên trong
     roi_mask = cv2.resize(gmask, (W, H), interpolation=cv2.INTER_NEAREST) > 0
     return lines, roi_mask
+
+
+# --- 1. CẤU HÌNH ---
+st.set_page_config(page_title="Traffic AI - UTT", layout="wide", page_icon="🚦")
+st.title("🚦 HỆ THỐNG ĐẾM XE & CẢNH BÁO GIAO THÔNG AI")
+st.markdown("**Đồ án Kỹ thuật - Sinh viên: Lê Giáp Tuấn Sơn - UTT**")
+st.caption("🔖 " + BUILD_TAG)
 
 
 def _btn_full_width(label):
@@ -183,244 +249,87 @@ def _btn_full_width(label):
         return st.button(label, type="primary", use_container_width=True)
 
 
-# ================= session global =================
-if "store" not in st.session_state:
-    st.session_state.store = TrafficStore()
-if "control" not in st.session_state:
-    st.session_state.control = RunControl()
-if "run_thread" not in st.session_state:
-    st.session_state.run_thread = None
-if "chat" not in st.session_state:
-    st.session_state.chat = []
-if "chat_q" not in st.session_state:
-    st.session_state.chat_q = ""
-
-_CURRENT = {"img": None, "kpi": None, "tbl": None}   # [v9.4] st.empty CO DINH moi nhat (moi lan rerun)
-
-
-def _kpi_html(st_, frac):
-    """KPI bang HTML (thre n ghi vao st.empty -> tao noi, khong nhip nhay)."""
-    def m2(ic, lb, val, delta=""):
-        d = ('<div style="font-size:.72em;color:#7ee787">%s</div>' % delta) if delta else ""
-        return ('<div style="flex:1;min-width:104px;padding:6px 10px;background:#0e1117;'
-                'border:1px solid #26272b;border-radius:8px">'
-                '<div style="font-size:.78em;color:#a3a8b3">%s %s</div>'
-                '<div style="font-size:1.3em;font-weight:700;color:#f0f2f6">%s</div>%s</div>' % (ic, lb, val, d))
-    row = ('<div style="display:flex;gap:8px;flex-wrap:wrap">'
-          + m2("\U0001F6A6", "Trạng thái", st_["status"],
-               "đang chạy" if st_["running"] else ("kết thúc" if st_["finished"] else "chờ"))
-          + m2("∑", "Tổng xe", str(st_["total"]), ("%d/phút" % st_["per_minute"]) if st_["events"] else "")
-          + m2("▣", "Trong khung", str(st_["active_now"]))
-          + m2("⏱", "FPS", str(st_["fps"]))
-          + m2("⚡", "TB km/h", "%.1f" % st_["avg_speed"])
-          + "</div>")
-    pct = int(min(frac, 1.0) * 100)
-    bar = ('<div style="height:6px;background:#26272b;border-radius:4px;overflow:hidden;margin-top:6px">'
-           '<div style="height:100%%;width:%d%%;background:#2ea043"></div></div>'
-           '<div style="font-size:.78em;color:#a3a8b3;margin-top:2px">Video đã xử lý: %d%%</div>' % (pct, pct))
-    return row + bar
-
-
-class _LivePush:
-    """[v9.4] DUỠI CƠ CHẾ V7: thread AI ghi vao cac st.empty() CO DINH (_CURRENT).
-    Trinh duyet chi DOI anh tai choi (in-place update) - KHONG xoa/tao lai khung
-    -> HET hien tuong nhip nhay an/hien (do fragment tao lai DOM moi 0.8s).
-    Video LO 960x540 (chu so luong 1280x720, chi hien thi lo ra)."""
-    def __init__(self, store_):
-        self._store = store_
-        self._last_img, self._last_kpi, self._last_tbl = 0.0, 0.0, 0.0
-
-    def image(self, frame_bgr, **kw):
-        import time as _t
-        now = _t.time()
-        frac = self._frac()
-        if now - self._last_img >= 0.35:
-            self._last_img = now
-            c = _CURRENT.get("img")
-            if c is not None:
-                try:
-                    rgb = cv2.cvtColor(cv2.resize(frame_bgr, (960, 540)), cv2.COLOR_BGR2RGB)
-                    c.image(rgb, channels="RGB", width=960,
-                            caption="📺 Khung mới nhất (live từ thread AI — chạy LIÊN TỤC, không nhấp nháy)")
-                except Exception:
-                    pass
-        if now - self._last_kpi >= 1.5:
-            self._last_kpi = now
-            k = _CURRENT.get("kpi")
-            if k is not None:
-                try:
-                    k.markdown(_kpi_html(self._store.stats(), frac), unsafe_allow_html=True)
-                except Exception:
-                    pass
-        if now - self._last_tbl >= 2.0:
-            self._last_tbl = now
-            b = _CURRENT.get("tbl")
-            if b is not None and self._store.events:
-                try:
-                    import pandas as pd
-                    evs = self._store.events[-15:][::-1]
-                    df = pd.DataFrame(evs)
-                    df["Loai"] = [_CLS.get(e["cls"], "?") for e in evs]
-                    b.dataframe(df[["wall", "t", "Loai", "speed"]], use_container_width=True, height=230)
-                except Exception:
-                    pass
-
-    def _frac(self):
-        try:
-            s = self._store.stats()
-            return min(1.0, (s["video_sec"] / 360.0))
-        except Exception:
-            return 0.0
-
-    # hinh thuoc tinh bo sung (de tracking.py goi duoc)
-    def progress(self, frac, text=""):
-        pass
-
-store = st.session_state.store
-control = st.session_state.control
-_CLS = {0: "Ô tô", 1: "Xe máy", 2: "Xe tải", 3: "Xe bus", 4: "Xe ba gác"}
-
-
-def _thread_done():
-    th = st.session_state.run_thread
-    return th is None or not th.is_alive()
-
-
-def _kpi_row():
-    s = store.stats()
-    c1, c2, c3, c4, c5 = st.columns(5)
-    c1.metric("🚦 Trạng thái", s["status"],
-              delta="đang chạy" if s["running"] else ("kết thúc" if s["finished"] else "chờ"))
-    c2.metric("Tổng xe", s["total"],
-              delta=("%d/phút" % s["per_minute"]) if s["events"] else None)
-    c3.metric("Trong khung", s["active_now"])
-    c4.metric("FPS", s["fps"])
-    c5.metric("⚡ TB km/h", s["avg_speed"])
-
-
-def _mini_stats_box():
-    s = store.stats()
-    txt = "Ô tô %d · Xe máy %d · Xe tải %d · Xe bus %d · Xe ba gác %d" % (
-        s["counts"].get(0, 0), s["counts"].get(1, 0), s["counts"].get(2, 0),
-        s["counts"].get(3, 0), s["counts"].get(4, 0))
-    st.caption("📊 " + txt + ("  |  Đỉnh: phút " + str(s["peak"]["minute"]) +
-                              " (%d xe/phút)" % s["peak"]["total"] if s["peak"] else ""))
-
-
-# ================= HEADER (giu nguyen nhu desktop) =================
-st.title("🚦 TRAFFIC COPILOT — Hệ thống đếm xe & đối thoại giao thông AI")
-st.caption("Đồ án Kỹ thuật — Lê Giáp Tuấn Sơn — UTT  ·  🔖 " + BUILD_TAG)
-
-# ================= BẢNG ĐIỀU KHIỂN (sidebar - y hieu desktop) =================
+# --- 2. BẢNG ĐIỀU KHIỂN (GIỮ PHONG CÁCH CŨ) ---
 with st.sidebar:
     st.header("⚙️ BẢNG ĐIỀU KHIỂN")
-    st.markdown("**1. Video**")
-    uploaded_file = st.file_uploader("video (mp4/avi/mov)", type=['mp4', 'avi', 'mov'])
-
-    st.markdown("**2. Chế độ đếm**")
-    mode = st.radio("Nguồn đếm", ["Đếm qua vạch (Line)", "Đếm trong vùng (ROI)"], label_visibility="collapsed")
-
-    st.markdown("**3. Hiệu năng**")
-    perf_mode = st.radio("Hiệu năng",
-                         ["Nhanh (CPU 640x360)", "Siêu nhanh (CPU demo 480x270)", "Chất lượng (GPU 1280x720)"],
-                         index=1, label_visibility="collapsed")
-    st.caption("🌐 **Cloud không có GPU** (CPU only) — chọn *Chất lượng (GPU)* vẫn chạy bằng CPU nên chậm (FPS ~4-6). "
-               "**Đã chọn sẵn 'Siêu nhanh (480x270)' cho demo mượt nhất.** "
-               "Chạy app trên **máy có GPU** thì chọn *Chất lượng (GPU 1280x720)*.")
-
-    if _thread_done():
-        btn_run = _btn_full_width("▶️ BẮT ĐẦU CHẠY (+ mở CHATBOT)")
-    else:
-        st.info("⏳ AI đang chạy NỀN — dùng nút bên dưới để Tạm dừng/Dừng.")
-        btn_run = False
-        if st.button("⏯️ Tạm dừng / Tiếp tục"):
-            control.toggle_pause()
-        if st.button("⛔ Dừng hẳn & Lưu"):
-            control.request_stop()
-
-    if st.session_state.get("_video_loaded") and st.session_state.get("_has_shapes"):
-        st.success("✅ Đã nạp %s · %d hình vẽ · sẵn sàng chạy" % (
-            st.session_state.get("_vname", "?"), st.session_state.get("_nshapes", 0)))
-
     st.markdown("---")
-    st.markdown("**Cảm biến Real-time**")
-    _kpi_row()
-    s = store.stats()
-    if s["detail_csv"] and os.path.exists(s["detail_csv"]):
-        st.markdown("📡 **CSV live đang ghi**: `%s`" % os.path.basename(s["detail_csv"]))
-        with open(s["detail_csv"], "rb") as _fh:
-            st.download_button("⬇️ Tải CSV sự kiện (live)", _fh,
-                               file_name=os.path.basename(s["detail_csv"]), mime="text/csv")
-    else:
-        st.caption("CSV live: chưa chạy")
-    if s["events"]:
-        p = store.write_summary_csv()
-        if os.path.exists(p):
-            with open(p, "rb") as _fh2:
-                st.download_button("📊 Tải CSV thống kê theo phút", _fh2,
-                                   file_name=os.path.basename(p), mime="text/csv")
+    st.markdown("**1. Tải Video Lên**")
+    uploaded_file = st.file_uploader("video", type=['mp4', 'avi', 'mov'])
+    mode = st.radio("2. Chế Độ Phân Tích", ["Đếm Vạch (Line)", "Đếm Vùng (ROI)"])
+    perf_mode = st.radio(
+        "3. Tốc Độ",
+        ["Siêu nhanh (CPU demo)", "Nhanh (CPU)", "Chất lượng (GPU)"],
+        help="Cloud chạy CPU. 'Siêu nhanh': YOLO 480x270 + bỏ frame (demo). "
+             "'Nhanh': 640x360. 'Chất lượng': 1280x720 (có GPU).")
+    btn_run = _btn_full_width("🚀 KHỞI ĐỘNG AI")
 
-# ================= VIDEO + VẼ (main - khung rong to) =================
-st.subheader("📥 Nạp video — 🖊️ Vẽ vạch (tím) / vùng (xanh lá) — rồi ▶️ CHẠY")
-if uploaded_file is None:
-    st.info("Tải video lên ở **Bảng điều khiển** (sidebar) để bắt đầu.")
-else:
+# --- 3. XỬ LÝ VIDEO: thêm video là TỰ HIỆN KHUNG ĐƯỜNG để vẽ ---
+if uploaded_file is not None:
     video_path = _workfile("video_tam.mp4")
     if "last_filename" not in st.session_state or st.session_state.last_filename != uploaded_file.name:
         st.session_state.last_filename = uploaded_file.name
         with open(video_path, "wb") as f:
             f.write(uploaded_file.getvalue())
-        st.session_state["_video_loaded"] = False
-        st.session_state["_has_shapes"] = False
         frame, bg_info = _find_content_frame(video_path)
         if frame is not None:
             frame = cv2.resize(frame, (W, H))
             st.session_state.bg_image = Image.fromarray(cv2.cvtColor(frame, cv2.COLOR_BGR2RGB))
-            st.session_state._video_loaded = True
-            st.session_state._vname = uploaded_file.name
             st.caption("🎞️ Đã cắt khung để vẽ: " + bg_info)
         else:
+            st.session_state.bg_image = None
             st.error("⚠️ " + bg_info)
+            st.info("📹 Xem video gốc bằng trình duyệt:")
+            st.video(uploaded_file)
 
-    if st.session_state.get("bg_image") is not None:
+    # --- 4. 1 HÌNH TO ĐỂ VẼ (giữ phong cách cũ) ---
+    if "bg_image" in st.session_state and st.session_state.bg_image is not None:
         bg_pil_grid = _bake_grid(st.session_state.bg_image)
+
         _ck = st.session_state.get("_canvas_seq", 0)
-        if st.button("🗑️ Xoá hết & Vẽ lại"):
+        if st.button("🗑️ Xoá hết & Vẽ lại", key="reset_draw"):
             st.session_state["_canvas_seq"] = _ck + 1
-            st.session_state["_has_shapes"] = False
             st.rerun()
 
-        drawing_mode = "line" if mode.startswith("Đếm qua vạch") else "polygon"
-        canvas_result = None
+        st.subheader("🖊️ Vẽ vạch / vùng trên ảnh (sau đó bấm KHỞI ĐỘNG AI)")
+
+        # 1 CANVAS DUY NHẤT. Key CHỈ đổi khi "Xoá hết & Vẽ lại" (reset),
+        # KHÔNG đổi khi chọn Line/ROI -> ĐỔI CHẾ ĐỘ MÀ HÌNH VẼ CŨ VẪN GIỮ.
+        drawing_mode = "line" if mode == "Đếm Vạch (Line)" else "polygon"
         if _HAS_CANVAS:
             if drawing_mode == "line":
                 canvas_result = st_canvas(
                     fill_color="rgba(0,0,0,0)",
                     stroke_width=4, stroke_color="#FF00FF",
-                    background_image=_bake_grid(st.session_state.bg_image),
+                    background_image=_bg_uri(bg_pil_grid),
                     update_streamlit=True, height=DY, width=DX,
-                    drawing_mode="line", return_image_data=True,
-                    key="draw_canvas_%d" % _ck)
+                    drawing_mode="line",
+                    return_image_data=True, key="draw_canvas_%d" % _ck)
             else:
                 canvas_result = st_canvas(
                     fill_color="rgba(0,120,255,0.45)",
                     stroke_width=4, stroke_color="#00FF00",
-                    background_image=_bake_grid(st.session_state.bg_image),
+                    background_image=_bg_uri(bg_pil_grid),
                     update_streamlit=True, height=DY, width=DX,
-                    drawing_mode="polygon", return_image_data=True,
-                    key="draw_canvas_%d" % _ck)
+                    drawing_mode="polygon",
+                    return_image_data=True, key="draw_canvas_%d" % _ck)
         else:
-            st.image(bg_pil_grid, width=DX)
-            st.caption("(Canvas không khả dụng — dùng vạch/vùng đã vẽ trước)")
+            st.image(bg_pil_grid)
+            canvas_result = None
+            st.caption("(Canvas không khả dụng trên máy chủ — chạy vẫn dùng được vạch/vùng bạn đã vẽ trước)")
 
+        st.caption("💡 **Vạch** = kéo 1 nét · **Vùng** = click các góc (click **góc đầu** để khép, "
+                   "**góc giữa** để bỏ góc). Đổi chế độ Line↔ROI **không mất hình đã vẽ**. "
+                   "Sửa: Undo ↶ / thùng rác trên canvas, hoặc 'Xoá hết & Vẽ lại'.")
+
+        # Đọc MÀU NÉT VẼ (tím=vạch, xanh-lá=vùng) - KHÔNG so nền -> không phình/lech
         lines, roi_mask = _read_shapes_color(canvas_result, W, H)
         _nreg, _ = cv2.connectedComponents(roi_mask.astype(np.uint8))
-        n_shapes = len(lines) + (_nreg - 1)
-        st.session_state["_has_shapes"] = n_shapes > 0
-        st.session_state["_lines"] = lines
-        st.session_state["_roi_mask"] = roi_mask
-        st.write("📋 Nhận được: **%d vạch** · **%d vùng**" % (len(lines), _nreg - 1))
+        n_regions = _nreg - 1
 
+        st.write("📋 Nhận được: **%d vạch** · **%d vùng**  _(đọc từ pixel bạn vẽ — bám sát, không lệch)_"
+                 % (len(lines), n_regions))
+
+        # PREVIEW: hiện TẤT CẢ hình (vạch + mọi vùng) trước khi chạy
         if lines or roi_mask.any():
             prev = np.array(st.session_state.bg_image.convert("RGB"))
             for A, B in lines:
@@ -430,150 +339,57 @@ else:
                 cnts, _ = cv2.findContours(cm, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
                 cv2.drawContours(prev, cnts, -1, (0, 0, 255), 3)
                 cv2.fillPoly(prev, cnts, (40, 40, 160))
-            st.image(prev, width=DX, caption="📌 PREVIEW hình khi chạy")
+            st.image(prev, channels="RGB",
+                     caption="📌 PREVIEW — hình sẽ hiển thị khi chạy (vạch tím + vùng đỏ) = y hệt bạn vẽ")
 
-        st.caption("💡 Vạch = kéo 1 nét · Vùng = click các góc (góc đầu khép). "
-                   "Sửa: Undo / thùng rác trên canvas.")
+        # --- 5. NÚT CHẠY ĐẾM (TẤT CẢ hình hoạt động) ---
+        if btn_run:
+            st.markdown("---")
+            st.subheader("📟 Màn Hình Giám Sát Real-time")
+            if not lines and not roi_mask.any():
+                st.warning("⚠️ Chưa vẽ gì. Vẽ ít nhất **1 vạch** HOẶC **1 vùng** rồi bấm lại.")
+            else:
+                st.write("Chạy với **%d vạch** + **%d vùng** — mọi hình trên đều được vẽ & đếm."
+                         % (len(lines), n_regions))
+                counter_obj = MultiCounter(lines=lines, roi_mask=(roi_mask if roi_mask.any() else None))
+                if perf_mode.startswith("Chất lượng"):
+                    runner = run_ai_quality
+                elif perf_mode.startswith("Siêu nhanh"):
+                    runner = run_ai_turbo
+                else:
+                    runner = run_ai_fast
+                st.session_state.store.reset()
+                try:
+                    runner("best.pt", video_path, _workfile("output.mp4"), counter_obj, st.empty(),
+                           store=st.session_state.store)
+                    st.balloons()
+                    st.success("🎉 Hoàn tất! Báo cáo CSV: `Bao_Cao/` · Video kết quả: `Video_Xuat/`")
+                except Exception as e:
+                    st.error("❌ Lỗi khi tính toán: %s" % e)
 
-# ================= CHẠY (giu y hieu desktop: noi Line/ROI -> counter) =================
-if btn_run:
-    if not st.session_state.get("_has_shapes"):
-        st.warning("⚠️ Vẽ ít nhất **1 vạch** HOẶC **1 vùng** phía trên rồi quay lại bấm.")
-    else:
-        # [Y HIEU DESKTOP] cau truc DUNG: moi vach = 1 phan tu (diemA, diemB);
-        # roi_mask = matrix dien day (khong dung roi_polygons nua).
-        _lines = st.session_state["_lines"] or None
-        _mask = st.session_state["_roi_mask"]
-        _use_mask = _mask is not None and _mask.any()
-        counter_obj = MultiCounter(
-            lines=_lines if not _use_mask else None,
-            roi_mask=_mask if _use_mask else None)
-        if perf_mode.startswith("Chất lượng"):
-            runner = run_ai_quality
-        elif perf_mode.startswith("Siêu nhanh"):
-            runner = run_ai_turbo
-        else:
-            runner = run_ai_fast
+# ================= [CHATBOT] PHAN THEM v7b — gui KHONG DUNG, video van chay nhu ban cu =================
+# Doc du lieu tu st.session_state.store (thread AI da ghi lien tuc) -> tra loi cap nhat
+store = st.session_state.store
+st.markdown("---")
+st.subheader("💬 Chatbot Giao Thông (cập nhật liên tục theo video đang đếm)")
+with st.expander("📊 Xem thống kê real-time (tổng xe, mật độ, tốc độ)"):
+    _s = store.stats()
+    _c1, _c2, _c3, _c4 = st.columns(4)
+    _c1.metric("Tổng xe", _s["total"], "trạng thái: " + _s["status"])
+    _c2.metric("Trong khung", _s["active_now"])
+    _c3.metric("FPS", _s["fps"])
+    _c4.metric("TB km/h", _s["avg_speed"])
+    if _s["detail_csv"] and os.path.exists(_s["detail_csv"]):
+        with open(_s["detail_csv"], "rb") as _fh:
+            st.download_button("⬇️ Tải CSV sự kiện (ghi liên tục)", _fh,
+                               file_name=os.path.basename(_s["detail_csv"]), mime="text/csv")
+        _sp = store.write_summary_csv()
+        with open(_sp, "rb") as _fh2:
+            st.download_button("📊 Tải CSV thống kê theo phút", _fh2,
+                               file_name=os.path.basename(_sp), mime="text/csv")
 
-        store.reset()
-        control.reset()
-        st.session_state.chat = []
-        st.session_state.chat_q = ""
-        store.on_start(perf_mode)
-        st.session_state["out_path"] = _workfile("output.mp4")
-
-        def _ai_worker(runner_fn, _m, _vin, _vout, _ctr, _st, _store, _ctl):
-            try:
-                runner_fn(_m, _vin, _vout, _ctr, _st, store=_store, control=_ctl)
-            except Exception as e:
-                _store.on_finish(ok=False, error=str(e))
-
-        th = threading.Thread(
-            target=_ai_worker,
-            args=(runner, "best.pt", video_path, st.session_state["out_path"],
-                  counter_obj, _StubFrame(), store, control),
-            daemon=True)
-        st.session_state.run_thread = th
-        th.start()
-        st.session_state.chat.append(("b", "🤖 Video bắt đầu lúc " + time.strftime("%H:%M:%S") +
-                                      " · CSV live: " + os.path.basename(store.detail_csv)))
-        st.success("🚀 AI đang chạy NỀN — video + KPI cập nhật bên dưới, HỎI CHATBOT ngay!")
-        st.rerun()
-
-# ================= VIDEO LIVE + KPI + SU KIEEN (v9.5 - fragment + CAI ELEMENT ON DINH) =================
-# [v9.5 fix "dung yen + nhay"]
-#  - Thread AI KHONG dong UI (StubFrame no-op): chi GHI vao TrafficStore.
-#    => ghi UI tu thread nen "dung yen" tren Cloud (Cloud chi cap nhat UI tu session thread).
-#  - Fragment (chay TRONG session thread, hoat dong tren Cloud) doc store + render.
-#  - CAY ELEMENT ON DINH: moi lan fragment chay, tung st.image / st.markdown / st.dataframe
-#    deu BI LUON CHUYN RA (khong co if/else xoay lieu loai widget) => trinh duyet chi DOI
-#    NOI DUNG tai choi, KHONG tao lai widget => HET nhay an/hien (nguyen nhan v9.2/9.3).
-def _frac_now():
-    try:
-        return min(1.0, store.stats()["video_sec"] / 360.0)
-    except Exception:
-        return 0.0
-
-def _live_frag():
-    """Cay element LUON ON DINH: image + markdown(KPI) + dataframe (3 slot)."""
-    fr = store.get_frame()
-    if fr is None:
-        # placeholder am de vao o image (giu o st.image, KHONG doi thanh st.info)
-        fr = np.zeros((540, 960, 3), dtype=np.uint8)
-    rgb = cv2.cvtColor(fr, cv2.COLOR_BGR2RGB)
-    st.image(rgb, channels="RGB", width=960,
-             caption="📺 Khung mới nhất (live từ thread AI) — cập nhật ~1s/lần, KHÔNG nhấp nháy"
-                    if store.stats()["running"] else "Chưa có khung — ▶️ CHẠY ở Bảng điều khiển rồi quay lại đây.")
-    st.markdown(_kpi_html(store.stats(), _frac_now()), unsafe_allow_html=True)
-    evs = store.events[-15:][::-1]
-    import pandas as pd
-    if evs:
-        df = pd.DataFrame(evs)
-        df["Loai"] = [_CLS.get(e["cls"], "?") for e in evs]
-        evs = evs
-    else:
-        df = pd.DataFrame(columns=["wall", "t", "Loai", "speed"])
-    st.dataframe(df, use_container_width=True, height=230,
-                 hide_index=True)
-
-st.subheader("📺 Giám sát Real-time (video CHẠY LIÊN TỤC, không nhấp nháy)")
-if hasattr(st, "fragment"):
-    @st.fragment(run_every=0.8)
-    def _live_auto():
-        _live_frag()
-    _live_auto()
-else:
-    _live_frag()
-
-# ================= THỐNG KÊ & ĐỒ THỊ (an toan - sua KeyError v8) =================
-st.subheader("📊 Thống kê & mật độ theo thời gian (cập nhật LIÊN TỤC khi video chạy)")
-_s = store.stats()
-if _s["events"]:
-    import pandas as pd
-    _c1, _c2 = st.columns(2)
-    with _c1:
-        st.markdown("**Xe/phút theo từng phút video**")
-        _bdf = pd.DataFrame({"mat_do_xe_phut": [store.bin_total[m] for m in sorted(store.bin_total)]})
-        _bdf = _bdf.reset_index().rename(columns={"index": "phut"})
-        st.bar_chart(_bdf.set_index("phut")["mat_do_xe_phut"])
-    with _c2:
-        st.markdown("**Phân bố loại xe (tổng từ đầu)**")
-        _total_now = _s["total"] or 1
-        _cdf = pd.DataFrame({
-            "Loai": [_CLS[c] for c in range(5)],
-            "So xe": [_s["counts"].get(c, 0) for c in range(5)],
-            "Tiep (%)": [round(100.0 * _s["counts"].get(c, 0) / _total_now, 1) for c in range(5)],
-        })
-        st.bar_chart(_cdf.set_index("Loai")["So xe"])
-        st.dataframe(_cdf, use_container_width=True, hide_index=True)
-    st.markdown("**Mật độ 5 phút gần nhất: %d xe/phút** · Trạng thái: %s · Tốc độ TB: %.1f km/h"
-                % (_s["per_minute"], _s["status"], _s["avg_speed"]))
-    if _s["peak"]:
-        st.markdown("🔺 **Đỉnh cao điểm**: phút %d–%d (%d xe/phút)" % (
-            _s["peak"]["minute"], _s["peak"]["minute"] + 1, _s["peak"]["total"]))
-else:
-    st.info("Chưa có dữ liệu — ▶️ CHẠY rồi quay lại. Đồ thị cập nhật LIÊN TỤC.")
-
-# ================= CHATBOT (ben duoi - y hieu desktop) =================
-st.subheader("💬 Chatbot Giao thông — hỏi TRONG LÚC video đang chạy")
-st.caption("Mọi câu trả lời đọc **ngay từ bộ dữ liệu real-time** (không cần chờ video kết thúc). "
-           "Ví dụ: *nay có bao nhiêu xe?* · *từ 2 phút sang 5 phút có bao nhiêu xe máy?* · *ùn tắc chưa?* · *tốc độ trung bình?* · *xuất csv*")
-
-for _role, _txt in st.session_state.chat:
-    with st.chat_message("user" if _role == "u" else "bot"):
-        st.markdown(_txt)
-
-if st.session_state.chat_q:
-    st.session_state.chat.append(("u", st.session_state.chat_q))
-    reply = trafficbot.ask(store, st.session_state.chat_q, store.stats()["video_sec"])
-    st.session_state.chat.append(("b", reply))
-    st.session_state.chat_q = ""
-    st.rerun()
-
-_user_q = st.chat_input("Hỏi bot: bao nhiêu xe / loại nào / mật độ / tốc độ / xuất csv...")
-if _user_q:
-    st.session_state.chat_q = _user_q
-    st.rerun()
-
-if not st.session_state.chat:
-    st.markdown(trafficbot.help_reply(store))
+_q = st.chat_input("Hỏi bot: 'nay có bao nhiêu xe?' / 'ùn tắc chưa?' / 'xuất csv'...")
+if _q:
+    st.chat_message("user").markdown(_q)
+    with st.chat_message("bot"):
+        st.markdown(trafficbot.ask(store, _q, store.stats()["video_sec"]))

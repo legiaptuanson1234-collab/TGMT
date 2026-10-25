@@ -38,19 +38,18 @@ def run_ai_system(model_path, video_in, video_out, counter_obj, stframe,
     disp_every: gui 1 anh ve trinh duyet / disp_every frame (giam = nhe hon
                 kenh Streamlit tren Cloud).
     Toa do dem ve luon qui ve hinh that 1280x720 (nong voi hinh nen va diem ve).
-    store: TrafficStore (livestore.py) - nen ghi su kien xe thep thoi gian thuc
-           (chatbot + CSV live doc tu day, khong can cho ket thuc).
-    control: RunControl - nut DUNG/TAM dung an toan giua thread AI va GUI.
+    [v7b+chatbot] store (TrafficStore, livestore.py): neu co -> ghi su kien xe
+        + khung + mat do LIEN TUC de chatbot/CSV doc (KHONG thay doi cong video).
     """
     model = YOLO(model_path)
+    if store is not None:
+        store.on_start()
     class_names = ['O To', 'Xe May', 'Xe Tai', 'Xe Bus', 'Xe Ba Gac']
 
     cap = cv2.VideoCapture(video_in)
     if not cap.isOpened():
         stframe.error("Không mở được video trên máy chủ: %s" % video_in)
         return
-    if store is not None:
-        store.on_start()
     fps_video = int(cap.get(cv2.CAP_PROP_FPS))
     if fps_video == 0:
         fps_video = 30
@@ -59,9 +58,6 @@ def run_ai_system(model_path, video_in, video_out, counter_obj, stframe,
 
     prev_time = time.time()
     last_save_time = 0
-    _last_push = 0.0
-    _last_push_frac = -1.0
-    total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT) or 0)
     track_history = defaultdict(list)
     track_time = defaultdict(list)
     speed_history = defaultdict(float)
@@ -71,16 +67,7 @@ def run_ai_system(model_path, video_in, video_out, counter_obj, stframe,
 
     print("[*] Chế độ hiệu năng: YOLO %dx%d, skip=%d, conf=%.2f" % (proc_w, proc_h, skip, conf))
 
-    # Nut DUNG/TAM dung (an toan giua thread)
-    if control is not None:
-        control.reset()
-
     while cap.isOpened():
-        if control is not None:
-            if control.stopped:
-                print("[*] Nguoi dung bam DUNG -> dung chu trinh AI.")
-                break
-            control.wait_if_paused()
         success, frame = cap.read()
         if not success or frame is None:
             break
@@ -89,8 +76,6 @@ def run_ai_system(model_path, video_in, video_out, counter_obj, stframe,
         if skip > 1 and frame_count % skip != 0:
             out.write(frame)  # van luon ghi, chi bat YOLO
             continue
-        if store is not None:
-            store.on_frame(frame)  # khung moi nhat de GUI lam dong ngay
 
         is_flash_frame = False
         current_active_vehicles = 0
@@ -109,13 +94,13 @@ def run_ai_system(model_path, video_in, video_out, counter_obj, stframe,
                 bx2, by2 = int(box[2] * sx), int(box[3] * sy)
                 cx, cy = (bx1 + bx2) // 2, (by1 + by2) // 2
 
-                did_count = counter_obj.check_and_count(cx, cy, track_id, int(cls_id))
-                if did_count:
+                _did_count = counter_obj.check_and_count(cx, cy, track_id, int(cls_id))
+                if _did_count:
                     is_flash_frame = True
                     if store is not None:
-                        sp = speed_history.get(track_id, 0.0)
-                        t_v = cap.get(cv2.CAP_PROP_POS_MSEC) / 1000.0
-                        store.on_vehicle(track_id, int(cls_id), t_v, sp, cx, cy)
+                        store.on_vehicle(track_id, int(cls_id),
+                                         cap.get(cv2.CAP_PROP_POS_MSEC) / 1000.0,
+                                         speed_history.get(track_id, 0.0), cx, cy)
 
                 if counter_obj.is_active(cx, cy):
                     current_active_vehicles += 1
@@ -194,51 +179,39 @@ def run_ai_system(model_path, video_in, video_out, counter_obj, stframe,
         cv2.putText(frame, status_text, (290, 32), cv2.FONT_HERSHEY_DUPLEX, 0.6, status_color, 1)
 
         out.write(frame)
-        # [v8] KHÔNG còn st.image tung từ thread (nguyên nhân LAG/đơ trang Streamlit Cloud
-        # khi thread ép UI render ~15 lần/s). Khung live đọc từ TrafficStore (GUI poll
-        # bằng st.fragment). Chỉ push progress chữ (rất nhẹ, throttle 0.7s/lần).
-        if stframe is not None and total_frames > 0:
-            frac = min(1.0, frame_count / total_frames)
-            if current_time - _last_push >= 0.7 or abs(frac - _last_push_frac) > 0.05:
-                _last_push = current_time
-                _last_push_frac = frac
-                try:
-                    # [v9.4] DUỠI CÔ CHẾ V7: ghi vao st.empty CO DINH (tra _LivePush),
-                    # trinh duyet tao noi -> HET nhip nhay. (_StubFrame: no-op.)
-                    stframe.image(frame)
-                except Exception:
-                    pass
+        if frame_count % max(1, disp_every) == 0:
+            disp = cv2.resize(frame, (848, 477))
+            stframe.image(cv2.cvtColor(disp, cv2.COLOR_BGR2RGB), channels="RGB")
 
     cap.release()
     out.release()
     if store is not None:
-        store.on_finish(ok=(not (control and control.stopped)),
-                        error="do-nguoi-dung" if (control and control.stopped) else "")
+        store.on_finish()
         store.close_csv()
 
 
 def run_ai_quality(model_path, video_in, video_out, counter_obj, stframe,
-                   store=None, control=None):
+                   store=None):
     """Chat luong cao (GPU): YOLO 1280x720, moi frame."""
     return run_ai_system(model_path, video_in, video_out, counter_obj, stframe,
                         proc_w=1280, proc_h=720, skip=1, conf=0.45, disp_every=2,
-                        store=store, control=control)
+                        store=store)
 
 
 def run_ai_fast(model_path, video_in, video_out, counter_obj, stframe,
-                store=None, control=None):
+                store=None):
     """Hieu nang (CPU): YOLO 640x360, moi frame, conf thap de bat du xe nho."""
     return run_ai_system(model_path, video_in, video_out, counter_obj, stframe,
                         proc_w=640, proc_h=360, skip=1, conf=0.35, disp_every=2,
-                        store=store, control=control)
+                        store=store)
 
 
 def run_ai_turbo(model_path, video_in, video_out, counter_obj, stframe,
-                 store=None, control=None):
+                 store=None):
     """Sieu nhanh (CPU demo tren Cloud): YOLO 480x270, bat moi 2 frame,
     gui anh ve trinh duyet moi 4 frame -> FPS thuc dung nhat (nhanh ~3-4 lan
     so voi run_ai_fast). Dan: chi dung de DEMO tren may chu, don xe rat
     nhanh co the bi bot (track gap)."""
     return run_ai_system(model_path, video_in, video_out, counter_obj, stframe,
                         proc_w=480, proc_h=270, skip=2, conf=0.30, disp_every=4,
-                        store=store, control=control)
+                        store=store)
