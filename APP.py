@@ -471,7 +471,7 @@ if btn_run:
         th = threading.Thread(
             target=_ai_worker,
             args=(runner, "best.pt", video_path, st.session_state["out_path"],
-                  counter_obj, _LivePush(store), store, control),
+                  counter_obj, _StubFrame(), store, control),
             daemon=True)
         st.session_state.run_thread = th
         th.start()
@@ -480,35 +480,50 @@ if btn_run:
         st.success("🚀 AI đang chạy NỀN — video + KPI cập nhật bên dưới, HỎI CHATBOT ngay!")
         st.rerun()
 
-# ================= VIDEO LIVE + KPI + SU KIEEN (v9.4 - CO CHE V7, HET NHIP NHAY) =================
-# 3 st.empty CO DINH: thread AI (qua _LivePush) ghi TRUC TIẾP vao -> trinh duyet chi
-# DOI NOI DUNG tai choi (in-place). Khong dung st.fragment (fragment tao lai DOM = nhay
-# an/hien - chinh la loi v9.2/v9.3). Video hien thi LO (960x540).
-st.subheader("📺 Giám sát Real-time (video CHẠY LIÊN TỤC, không nhấp nháy — chuẩn v7)")
-_live_img = st.empty()
-_live_kpi = st.empty()
-_live_tbl = st.empty()
-_CURRENT["img"], _CURRENT["kpi"], _CURRENT["tbl"] = _live_img, _live_kpi, _live_tbl
-# hinh anh ban dau (truoc khi AI chay / sau moi lan rerun chi dung 1 lan, thread se thay)
-_fr0 = store.get_frame()
-if _fr0 is not None:
-    _live_img.image(cv2.cvtColor(cv2.resize(_fr0, (960, 540)), cv2.COLOR_BGR2RGB),
-                    channels="RGB", width=960, caption="📺 Khung mới nhất (live từ thread AI)")
-elif store.stats()["running"]:
-    _live_img.info("Chờ khung đầu tiên (YOLO vừa khởi động, ~1-5s)...")
+# ================= VIDEO LIVE + KPI + SU KIEEN (v9.5 - fragment + CAI ELEMENT ON DINH) =================
+# [v9.5 fix "dung yen + nhay"]
+#  - Thread AI KHONG dong UI (StubFrame no-op): chi GHI vao TrafficStore.
+#    => ghi UI tu thread nen "dung yen" tren Cloud (Cloud chi cap nhat UI tu session thread).
+#  - Fragment (chay TRONG session thread, hoat dong tren Cloud) doc store + render.
+#  - CAY ELEMENT ON DINH: moi lan fragment chay, tung st.image / st.markdown / st.dataframe
+#    deu BI LUON CHUYN RA (khong co if/else xoay lieu loai widget) => trinh duyet chi DOI
+#    NOI DUNG tai choi, KHONG tao lai widget => HET nhay an/hien (nguyen nhan v9.2/9.3).
+def _frac_now():
+    try:
+        return min(1.0, store.stats()["video_sec"] / 360.0)
+    except Exception:
+        return 0.0
+
+def _live_frag():
+    """Cay element LUON ON DINH: image + markdown(KPI) + dataframe (3 slot)."""
+    fr = store.get_frame()
+    if fr is None:
+        # placeholder am de vao o image (giu o st.image, KHONG doi thanh st.info)
+        fr = np.zeros((540, 960, 3), dtype=np.uint8)
+    rgb = cv2.cvtColor(fr, cv2.COLOR_BGR2RGB)
+    st.image(rgb, channels="RGB", width=960,
+             caption="📺 Khung mới nhất (live từ thread AI) — cập nhật ~1s/lần, KHÔNG nhấp nháy"
+                    if store.stats()["running"] else "Chưa có khung — ▶️ CHẠY ở Bảng điều khiển rồi quay lại đây.")
+    st.markdown(_kpi_html(store.stats(), _frac_now()), unsafe_allow_html=True)
+    evs = store.events[-15:][::-1]
+    import pandas as pd
+    if evs:
+        df = pd.DataFrame(evs)
+        df["Loai"] = [_CLS.get(e["cls"], "?") for e in evs]
+        evs = evs
+    else:
+        df = pd.DataFrame(columns=["wall", "t", "Loai", "speed"])
+    st.dataframe(df, use_container_width=True, height=230,
+                 hide_index=True)
+
+st.subheader("📺 Giám sát Real-time (video CHẠY LIÊN TỤC, không nhấp nháy)")
+if hasattr(st, "fragment"):
+    @st.fragment(run_every=0.8)
+    def _live_auto():
+        _live_frag()
+    _live_auto()
 else:
-    _live_img.info("Chưa có khung — ▶️ CHẠY ở Bảng điều khiển rồi quay lại đây. "
-                   "Khi chạy: video + KPI + bảng sự kiện tự cập nhật LIÊN TỤC (không cần làm mới).")
-_live_kpi.markdown(_kpi_html(store.stats(), 0.0), unsafe_allow_html=True)
-if store.events:
-    _import_pd = __import__("pandas")
-    _evs0 = store.events[-15:][::-1]
-    _df0 = _import_pd.DataFrame(_evs0)
-    _df0["Loai"] = [_CLS.get(e["cls"], "?") for e in _evs0]
-    _live_tbl.dataframe(_df0[["wall", "t", "Loai", "speed"]], use_container_width=True, height=230)
-    _live_tbl.caption("")
-else:
-    _live_tbl.markdown("**📋 Bảng sự kiện mới nhất (live)** — chưa có sự kiện (chờ xe vượt vạch/vùng).")
+    _live_frag()
 
 # ================= THỐNG KÊ & ĐỒ THỊ (an toan - sua KeyError v8) =================
 st.subheader("📊 Thống kê & mật độ theo thời gian (cập nhật LIÊN TỤC khi video chạy)")
