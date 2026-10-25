@@ -6,6 +6,7 @@
 import customtkinter as ctk
 from tkinter import filedialog, scrolledtext
 import cv2
+import numpy as np
 from PIL import Image, ImageTk
 import os
 import sys
@@ -245,12 +246,16 @@ class TrafficCopilot(ctk.CTk):
         cv2.destroyAllWindows()
 
         mode = self.draw_mode.get()
+        # [FIX] MultiCounter.lines = DANH SACH VAACH, moi vaach = (diem1, diem2).
+        # Sai cu: lines=[tuple(p0), tuple(p1)] (2 phan tu rieng) -> cv2.line crash "Can't parse pt1"
         if mode == "line" and len(self.points) == 2:
-            self.counter_obj = MultiCounter(lines=[tuple(self.points[0]), tuple(self.points[1])])
-            self.set_status("✅ Đã lưu VẠCH. Bấm 🚀 Chạy!", "green")
+            p0, p1 = (int(x) for x in self.points[0]), (int(x) for x in self.points[1])
+            self.counter_obj = MultiCounter(lines=[(p0, p1)])
+            self.set_status("✅ Đã lưu VẠCH (2 điểm: %s, %s). Bấm 🚀 Chạy!" % (p0, p1), "green")
         elif mode == "roi" and len(self.points) >= 3:
-            self.counter_obj = MultiCounter(roi_polygons=[self.points])
-            self.set_status("✅ Đã lưu VÙNG. Bấm 🚀 Chạy!", "green")
+            pts = [[int(x), int(y)] for (x, y) in self.points]
+            self.counter_obj = MultiCounter(roi_polygons=[pts])
+            self.set_status("✅ Đã lưu VÙNG (%d góc). Bấm 🚀 Chạy!" % len(pts), "green")
         else:
             self.set_status("❌ Vẽ chưa đủ (vạch cần 2 điểm, vùng cần ≥3).", "red")
             self.counter_obj = None
@@ -289,22 +294,40 @@ class TrafficCopilot(ctk.CTk):
 
     def _ai_loop(self):
         """Vòng xử lý trong thread nền (GUI không bị block)."""
-        while self.is_running and self.cap is not None and self.cap.isOpened():
-            # tạm dừng
-            while self.is_paused and self.is_running:
-                time.sleep(0.15)
-            if not self.is_running:
-                break
-            ok, frame = self.cap.read()
-            if not ok:
-                break
-            frame = cv2.resize(frame, (1280, 720))
-            out = self.tracker.process_frame(frame, self.counter_obj)
-            if self.out_video:
-                self.out_video.write(out)
-            # cập nhật khung live (GUI đọc)
-            self.store.on_frame(out)
-        self._finish_run()
+        try:
+            while self.is_running and self.cap is not None and self.cap.isOpened():
+                while self.is_paused and self.is_running:
+                    time.sleep(0.15)
+                if not self.is_running:
+                    break
+                ok, frame = self.cap.read()
+                if not ok:
+                    break
+                frame = cv2.resize(frame, (1280, 720))
+                out = self.tracker.process_frame(frame, self.counter_obj)
+                if self.out_video:
+                    self.out_video.write(out)
+                self.store.on_frame(out)
+            self._finish_run()
+        except Exception:
+            import traceback
+            err = traceback.format_exc()
+            print(err)
+            # Hien loi le khung (de user thay thay vi man anh trong + thread chay)
+            try:
+                s = self.store.stats()
+                err_frame = np.zeros((1280, 720, 3), dtype=np.uint8)
+                err_frame[:] = (40, 20, 20)
+                cv2.putText(err_frame, "AI ERROR: (xem console)", (30, 60),
+                            cv2.FONT_HERSHEY_DUPLEX, 0.8, (0, 0, 255), 2)
+                cv2.putText(err_frame, err.splitlines()[-1][:90], (30, 100),
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 80, 80), 1)
+                self.store.on_frame(err_frame)
+            except Exception:
+                pass
+            self.is_running = False
+            self.store.on_finish(ok=False, error="ai_thread_crash")
+            self.set_status("❌ AI crash — xem log (dòng cuối trên console). Bấm lại để thử.", "red")
 
     def _finish_run(self):
         if self.cap:
