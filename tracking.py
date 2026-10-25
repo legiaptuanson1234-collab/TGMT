@@ -68,11 +68,18 @@ def run_ai_system(model_path, video_in, video_out, counter_obj, stframe,
     print("[*] Chế độ hiệu năng: YOLO %dx%d, skip=%d, conf=%.2f" % (proc_w, proc_h, skip, conf))
 
     while cap.isOpened():
+        if control is not None:
+            if control.stopped:
+                print("[*] Nguoi dung bam DUNG -> tung chuong AI.")
+                break
+            control.wait_if_paused()
         success, frame = cap.read()
         if not success or frame is None:
             break
         frame = cv2.resize(frame, (DISPLAY_W, DISPLAY_H))
         frame_count += 1
+        if store is not None:
+            store.on_frame(frame)   # [song song] khung moi nhat de fragment GUI doc (khong kho UI)
         if skip > 1 and frame_count % skip != 0:
             out.write(frame)  # van luon ghi, chi bat YOLO
             continue
@@ -191,27 +198,27 @@ def run_ai_system(model_path, video_in, video_out, counter_obj, stframe,
 
 
 def run_ai_quality(model_path, video_in, video_out, counter_obj, stframe,
-                   store=None):
+                   store=None, control=None):
     """Chat luong cao (GPU): YOLO 1280x720, moi frame."""
     return run_ai_system(model_path, video_in, video_out, counter_obj, stframe,
                         proc_w=1280, proc_h=720, skip=1, conf=0.45, disp_every=2,
-                        store=store)
+                        store=store, control=control)
 
 
 def run_ai_fast(model_path, video_in, video_out, counter_obj, stframe,
-                store=None):
+                store=None, control=None):
     """Hieu nang (CPU): YOLO 640x360, moi frame, conf thap de bat du xe nho."""
     return run_ai_system(model_path, video_in, video_out, counter_obj, stframe,
                         proc_w=640, proc_h=360, skip=1, conf=0.35, disp_every=2,
-                        store=store)
+                        store=store, control=control)
 
 
 def run_ai_turbo(model_path, video_in, video_out, counter_obj, stframe,
-                 store=None):
+                 store=None, control=None):
     """Sieu nhanh (CPU demo tren Cloud): YOLO 480x270, bat moi 2 frame,
     gui anh ve trinh duyet moi 4 frame -> FPS thuc dung nhat (nhanh ~3-4 lan
     so voi run_ai_fast). Dan: chi dung de DEMO tren may chu, don xe rat
     nhanh co the bi bot (track gap)."""
     return run_ai_system(model_path, video_in, video_out, counter_obj, stframe,
                         proc_w=480, proc_h=270, skip=2, conf=0.30, disp_every=4,
-                        store=store)
+                        store=store, control=control)

@@ -12,8 +12,10 @@ for _m in ("counting", "tracking"):
 import counting, tracking
 from tracking import run_ai_fast, run_ai_quality, run_ai_turbo, DISPLAY_W, DISPLAY_H
 from counting import MultiCounter
-from livestore import TrafficStore
+from livestore import TrafficStore, RunControl
 import trafficbot
+import threading
+import time
 
 try:
     from streamlit_drawable_canvas import st_canvas
@@ -237,6 +239,19 @@ st.set_page_config(page_title="Traffic AI - UTT", layout="wide", page_icon="🚦
 # [CHATBOT] kho du lieu real-time (thread AI ghi, chatbot + CSV doc - khong kho man hinh)
 if "store" not in st.session_state:
     st.session_state.store = TrafficStore()
+if "ctrl" not in st.session_state:
+    st.session_state.ctrl = RunControl()
+if "ai_thread" not in st.session_state:
+    st.session_state.ai_thread = None
+
+# Frame tuom: thread AI khong viep UI (video live chi do fragment doc tu store) -> het lag
+class _NoopFrame:
+    def image(self, *a, **k):
+        pass
+    def error(self, *a, **k):
+        pass
+    def progress(self, *a, **k):
+        pass
 st.title("🚦 HỆ THỐNG ĐẾM XE & CẢNH BÁO GIAO THÔNG AI")
 st.markdown("**Đồ án Kỹ thuật - Sinh viên: Lê Giáp Tuấn Sơn - UTT**")
 st.caption("🔖 " + BUILD_TAG)
@@ -353,54 +368,156 @@ if uploaded_file is not None:
             st.image(prev, channels="RGB",
                      caption="📌 PREVIEW — hình sẽ hiển thị khi chạy (vạch tím + vùng đỏ) = y hệt bạn vẽ")
 
-        # --- 5. NÚT CHẠY ĐẾM (TẤT CẢ hình hoạt động) ---
+        # --- 5. NÚT CHẠY ĐẾM (v11: AI chay NEN (thread) -> song song voi chatbot, KHONG dong man hinh) ---
+        _ctrl = st.session_state.ctrl
+        _ai_thread = st.session_state.ai_thread
+
         if btn_run:
             st.markdown("---")
-            st.subheader("📟 Màn Hình Giám Sát Real-time")
+            st.subheader("📟 Màn Hình Giám Sát Real-time (chạy NỀN — vẫn hỏi được CHATBOT bên dưới)")
             if not lines and not roi_mask.any():
                 st.warning("⚠️ Chưa vẽ gì. Vẽ ít nhất **1 vạch** HOẶC **1 vùng** rồi bấm lại.")
             else:
-                st.write("Chạy với **%d vạch** + **%d vùng** — mọi hình trên đều được vẽ & đếm."
-                         % (len(lines), n_regions))
-                counter_obj = MultiCounter(lines=lines, roi_mask=(roi_mask if roi_mask.any() else None))
-                if perf_mode.startswith("Chất lượng"):
-                    runner = run_ai_quality
-                elif perf_mode.startswith("Siêu nhanh"):
-                    runner = run_ai_turbo
+                if _ai_thread is not None and _ai_thread.is_alive():
+                    st.warning("AI đang chạy — bấm *Dừng & Lưu* trước khi chạy lại.")
                 else:
-                    runner = run_ai_fast
-                st.session_state.store.reset()
-                try:
-                    runner("best.pt", video_path, _workfile("output.mp4"), counter_obj, st.empty(),
-                           store=st.session_state.store)
-                    st.balloons()
-                    st.success("🎉 Hoàn tất! Báo cáo CSV: `Bao_Cao/` · Video kết quả: `Video_Xuat/`")
-                except Exception as e:
-                    st.error("❌ Lỗi khi tính toán: %s" % e)
+                    st.write("🚀 Khởi động AI **nền**: video + KPI cập nhật bên dưới (không đơ màn hình), "
+                             "**hỏi CHATBOT bất kỳ lúc nào** — không cần chờ video hết."
+                             " Chạy với **%d vạch** + **%d vùng**." % (len(lines), n_regions))
+                    counter_obj = MultiCounter(lines=lines, roi_mask=(roi_mask if roi_mask.any() else None))
+                    if perf_mode.startswith("Chất lượng"):
+                        _runner = run_ai_quality
+                    elif perf_mode.startswith("Siêu nhanh"):
+                        _runner = run_ai_turbo
+                    else:
+                        _runner = run_ai_fast
+                    st.session_state.store.reset()
+                    _ctrl.reset()
+                    st.session_state._out_path = _workfile("output.mp4")
 
-# ================= [CHATBOT] PHAN THEM v7b — gui KHONG DUNG, video van chay nhu ban cu =================
-# Doc du lieu tu st.session_state.store (thread AI da ghi lien tuc) -> tra loi cap nhat
+                    def _ai_worker(_runner_fn, _vid, _out, _ctr, _st, _store, _ctl):
+                        # st.empty() NO-OP: video live chi do fragment _live_panel doc tu _store
+                        # (khong st.image tung tu thread nen -> het lag/tranh don UI)
+                        try:
+                            _runner_fn("best.pt", _vid, _out, _ctr, _NoopFrame(), store=_store, control=_ctl)
+                        except Exception as _e:
+                            _store.on_finish(ok=False, error=str(_e))
+
+                    st.session_state.ai_thread = threading.Thread(
+                        target=_ai_worker,
+                        args=(_runner, video_path, st.session_state._out_path,
+                              counter_obj, None, st.session_state.store, _ctrl),
+                        daemon=True)
+                    st.session_state.ai_thread.start()
+                    st.success("🚀 AI đang chạy NỀN (thread %s). Video + KPI cập nhật bên dưới · "
+                               "hỏi CHATBOT ngay phía cuối trang!" % st.session_state.ai_thread.name)
+        # Nut dieu khiene (an toan giua thread + gui)
+        _running_now = _ai_thread is not None and _ai_thread.is_alive()
+        _s0 = st.session_state.store.stats()
+        if _running_now:
+            _p1, _p2, _p3 = st.columns([1, 1, 2])
+            if _p1.button("⏯️ Tạm dừng / Tiếp"):
+                _ctrl.toggle_pause()
+            if _p2.button("⛔ Dừng & Lưu CSV", type="secondary"):
+                _ctrl.request_stop()
+            _p3.markdown("📟 *AI chạy nền · %s · KPI cập nhật bên dưới*" % _s0["status"])
+        elif _s0["finished"] and _s0["total"] > 0:
+            st.balloons()
+            st.success("🎉 Hoàn tất: **%d xe** đã đếm! Báo cáo CSV: `Bao_Cao/` · Video kết quả: `Video_Xuat/`"
+                      % _s0["total"])
+            _sp0 = st.session_state.store.write_summary_csv()
+            with open(_sp0, "rb") as _fh0:
+                st.download_button("📊 Tải CSV thống kê theo phút", _fh0,
+                                   file_name=os.path.basename(_sp0), mime="text/csv")
+
+# ================= [V11] PANEL VIDEO LIVE + KPI (top-level, ON DINH — chat KHÔNG làm mất) =================
+# Fragment chi cap nhat PANEL NAY (video + KPI); canvas ben tren + chatbot cuoi trang
+# deu la top-level -> moi lan hoi bot (rerun) van giu du, khong mat video.
+# Cai element LUON DUY NHAT (1 image + 1 markdown KPI + 1 dataframe) -> chi DOI NOI DUNG
+# tai choi -> het hien tuong nhip nhay an/hien (sai lech cu a v9.2/9.3).
+
+def _live_panel_v11():
+    """Panel video live (chi panel nay tu cap nhat). CAI ELEMENT ON DINH (luon co
+    dung 1 image + 1 KPI + 1 bang) -> chi DOI NOI DUNG tai choi, khong tao lai
+    widget => HET nhip nhay an/hien. Chua co khung AI: hien KHUNG DUONG DA VE
+    (khong o den)."""
+    _st = st.session_state.store
+    _fr = _st.get_frame()
+    _s = _st.stats()
+    if _fr is not None:
+        _rgb = cv2.cvtColor(cv2.resize(_fr, (960, 540)), cv2.COLOR_BGR2RGB)
+        _cap = "📺 Khung mới nhất (AI chạy NỀN — cập nhật liên tục, không đơ)"
+    elif "bg_image" in st.session_state and st.session_state.bg_image is not None:
+        _rgb = np.array(st.session_state.bg_image)
+        _cap = ("⏳ AI đang khởi động/chạy — hiển thị khung đường để vẽ"
+                if _s["running"] else "Khung đường (vẽ xong, chưa chạy AI). Bấm ▶️ CHẠY AI bên trên.")
+    else:
+        _rgb = np.zeros((540, 960, 3), dtype=np.uint8)
+        _cap = "Chưa có video — tải video + vẽ + ▶️ CHẠY AI (bên trên) rồi quay lại đây."
+    st.image(_rgb, channels="RGB", width=960, caption=_cap)
+    # KPI
+    def m(ic, lb, val, delta=""):
+        d = ('<div style="font-size:.72em;color:#7ee787">%s</div>' % delta) if delta else ""
+        return ('<div style="flex:1;min-width:110px;padding:6px 10px;background:#0e1117;'
+                'border:1px solid #26272b;border-radius:8px">'
+                '<div style="font-size:.78em;color:#a3a8b3">%s %s</div>'
+                '<div style="font-size:1.3em;font-weight:700;color:#f0f2f6">%s</div>%s</div>' % (ic, lb, val, d))
+    _row = ('<div style="display:flex;gap:8px;flex-wrap:wrap">'
+            + m("🚦", "Trạng thái", _s["status"],
+                "đang chạy" if _s["running"] else ("kết thúc" if _s["finished"] else "chờ"))
+            + m("∑", "Tổng xe", str(_s["total"]),
+                ("%d/phút" % _s["per_minute"]) if _s["events"] else "")
+            + m("▣", "Trong khung", str(_s["active_now"]))
+            + m("⏱", "FPS", str(_s["fps"]))
+            + m("⚡", "TB km/h", "%.1f" % _s["avg_speed"]) + "</div>")
+    st.markdown(_row, unsafe_allow_html=True)
+    # Bang su kien moi nhat (CAI ON DINH: luon la st.dataframe, bieng rong khi chua co su kien)
+    _CLS_M = {0: "Ô tô", 1: "Xe máy", 2: "Xe tải", 3: "Xe bus", 4: "Xe ba gác"}
+    _evs = _st.events[-12:][::-1]
+    import pandas as pd
+    if _evs:
+        _df = pd.DataFrame(_evs)
+        _df["Loai"] = [_CLS_M.get(e["cls"], "?") for e in _evs]
+        _ev_cols = _df[["wall", "t", "Loai", "speed"]]
+    else:
+        _ev_cols = pd.DataFrame(columns=["wall", "t", "Loai", "speed"])
+    st.dataframe(_ev_cols, use_container_width=True, height=220, hide_index=True)
+    if not _ev_cols.empty:
+        st.caption("📋 %d sự kiện mới nhất (mỗi xe đếm 1 lần) — CSV ghi liên tục khi có xe." % len(_ev_cols))
+
+
+if hasattr(st, "fragment"):
+    @st.fragment(run_every=0.7)
+    def _live_auto_v11():
+        _live_panel_v11()
+    _live_auto_v11()
+else:
+    _live_panel_v11()
+
+st.caption("📡 **CSV live đang ghi**: `"
+           + (os.path.basename(st.session_state.store.stats()["detail_csv"]) if st.session_state.store.stats()["detail_csv"] else "(chưa chạy)")
+           + "` — mở Excel xem được ngay trong lúc video chạy.")
+
+# ================= [CHATBOT] v11 — top-level, dung song song voi video (khong mat) =================
 store = st.session_state.store
 st.markdown("---")
-st.subheader("💬 Chatbot Giao Thông (cập nhật liên tục theo video đang đếm)")
-with st.expander("📊 Xem thống kê real-time (tổng xe, mật độ, tốc độ)"):
-    _s = store.stats()
-    _c1, _c2, _c3, _c4 = st.columns(4)
-    _c1.metric("Tổng xe", _s["total"], "trạng thái: " + _s["status"])
-    _c2.metric("Trong khung", _s["active_now"])
-    _c3.metric("FPS", _s["fps"])
-    _c4.metric("TB km/h", _s["avg_speed"])
-    if _s["detail_csv"] and os.path.exists(_s["detail_csv"]):
-        with open(_s["detail_csv"], "rb") as _fh:
-            st.download_button("⬇️ Tải CSV sự kiện (ghi liên tục)", _fh,
-                               file_name=os.path.basename(_s["detail_csv"]), mime="text/csv")
-        _sp = store.write_summary_csv()
-        with open(_sp, "rb") as _fh2:
-            st.download_button("📊 Tải CSV thống kê theo phút", _fh2,
-                               file_name=os.path.basename(_sp), mime="text/csv")
+st.subheader("💬 Chatbot Giao Thông (hỏi **ngay trong lúc video đang chạy** — dữ liệu real-time)")
+st.caption("Ví dụ: *'nay có bao nhiêu xe?'* · *'từ 2 phút sang 5 phút có bao nhiêu xe máy?'* · "
+           "*'ùn tắc chưa?'* · *'tốc độ trung bình?'* · *'xuất csv'")
 
-_q = st.chat_input("Hỏi bot: 'nay có bao nhiêu xe?' / 'ùn tắc chưa?' / 'xuất csv'...")
+if "chat" not in st.session_state:
+    st.session_state.chat = []
+for _role, _txt in st.session_state.chat:
+    with st.chat_message("user" if _role == "u" else "bot"):
+        st.markdown(_txt)
+
+_q = st.chat_input("Hỏi bot: bao nhiêu xe / loại nào / mật độ / tốc độ / xuất csv...")
 if _q:
-    st.chat_message("user").markdown(_q)
+    st.session_state.chat.append(("u", _q))
+    _reply = trafficbot.ask(store, _q, store.stats()["video_sec"])
+    st.session_state.chat.append(("b", _reply))
     with st.chat_message("bot"):
-        st.markdown(trafficbot.ask(store, _q, store.stats()["video_sec"]))
+        st.markdown(_reply)
+if not st.session_state.chat:
+    with st.chat_message("bot"):
+        st.markdown(trafficbot.help_reply(store))
