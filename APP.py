@@ -409,26 +409,31 @@ if uploaded_file is not None:
                               counter_obj, None, st.session_state.store, _ctrl),
                         daemon=True)
                     st.session_state.ai_thread.start()
-                    st.success("🚀 AI đang chạy NỀN (thread %s). Video + KPI cập nhật bên dưới · "
-                               "hỏi CHATBOT ngay phía cuối trang!" % st.session_state.ai_thread.name)
+                    st.caption("🚀 **AI đang chạy NỀN** — video + KPI cập nhật bên dưới · hỏi CHATBOT "
+                               "ngay phía cuối trang (không cần chờ video hết). "
+                               "Điều khiển: 2 nút *Tạm dừng / Dừng & Lưu* (dưới canvas).")
         # Nut dieu khiene (an toan giua thread + gui)
         _running_now = _ai_thread is not None and _ai_thread.is_alive()
         _s0 = st.session_state.store.stats()
-        if _running_now:
-            _p1, _p2, _p3 = st.columns([1, 1, 2])
-            if _p1.button("⏯️ Tạm dừng / Tiếp"):
+        _c1, _c2, _c3 = st.columns([1, 1, 2])
+        with _c1:
+            if st.button("⏯️ Tạm dừng / Tiếp", disabled=not _running_now):
                 _ctrl.toggle_pause()
-            if _p2.button("⛔ Dừng & Lưu CSV", type="secondary"):
+        with _c2:
+            if st.button("⛔ Dừng & Lưu CSV", type="secondary", disabled=not _running_now):
                 _ctrl.request_stop()
-            _p3.markdown("📟 *AI chạy nền · %s · KPI cập nhật bên dưới*" % _s0["status"])
-        elif _s0["finished"] and _s0["total"] > 0:
-            st.balloons()
-            st.success("🎉 Hoàn tất: **%d xe** đã đếm! Báo cáo CSV: `Bao_Cao/` · Video kết quả: `Video_Xuat/`"
-                      % _s0["total"])
-            _sp0 = st.session_state.store.write_summary_csv()
-            with open(_sp0, "rb") as _fh0:
-                st.download_button("📊 Tải CSV thống kê theo phút", _fh0,
-                                   file_name=os.path.basename(_sp0), mime="text/csv")
+        with _c3:
+            if _running_now:
+                _c3.markdown("📟 *AI chạy NỀN · %s · %s · KPI cập nhật bên dưới*"
+                              % (_s0["status"], "ĐANG TẠM DỪNG" if _ctrl.paused else "đang chạy"))
+            elif _s0["finished"] and _s0["total"] > 0:
+                _c3.markdown("✅ *Đã xong: %d xe · CSV: `Bao_Cao/` · Video: `Video_Xuat/`*" % _s0["total"])
+                _sp0 = st.session_state.store.write_summary_csv()
+                with open(_sp0, "rb") as _fh0:
+                    st.download_button("📊 Tải CSV thống kê theo phút", _fh0,
+                                       file_name=os.path.basename(_sp0), mime="text/csv")
+            else:
+                _c3.markdown("💤 *Chưa chạy AI — bấm ▶️ CHẠY AI (trên) để đếm xe.*")
 
 # ================= [V11] PANEL VIDEO LIVE + KPI (top-level, ON DINH — chat KHÔNG làm mất) =================
 # Fragment chi cap nhat PANEL NAY (video + KPI); canvas ben tren + chatbot cuoi trang
@@ -487,7 +492,7 @@ def _live_panel_v11():
 
 
 if hasattr(st, "fragment"):
-    @st.fragment(run_every=0.7)
+    @st.fragment(run_every=1.0)
     def _live_auto_v11():
         _live_panel_v11()
     _live_auto_v11()
